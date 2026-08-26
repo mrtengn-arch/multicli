@@ -12,6 +12,14 @@ const fs = require('fs');
 const os = require('os');
 const pty = require('node-pty');
 
+// Safety net: an uncaught exception in the main process otherwise crashes the whole
+// app and shows Electron's native "A JavaScript error occurred in the main process"
+// dialog (one per pty callback that fires after teardown, which is exactly what the
+// missing `mainWindow = null` bug above used to do). Log and keep running instead.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+
 const isWin = process.platform === 'win32';
 const DEFAULT_SHELL = isWin ? 'powershell.exe' : (process.env.SHELL || 'bash');
 
@@ -53,6 +61,14 @@ function createWindow() {
 
   Menu.setApplicationMenu(null); // custom title bar draws its own menu
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+
+  // Without this, `mainWindow` keeps pointing at a destroyed BrowserWindow after the
+  // user closes it. Any pty still alive at that moment (one per open panel) fires its
+  // onData/onExit asynchronously afterwards, and `mainWindow.webContents.send(...)`
+  // throws "Object has been destroyed" — one uncaught main-process exception (and one
+  // error dialog) per panel that was open. Nulling it out here makes the `mainWindow?.`
+  // guards already in the pty handlers actually work.
+  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 app.whenReady().then(createWindow);
@@ -298,11 +314,14 @@ ipcMain.handle('pty:spawn', (_event, { id, cwd, cols, rows }) => {
     env: process.env,
   });
 
+  // try/catch is defense in depth on top of the `mainWindow?.` guard (see the
+  // 'closed' handler above) — belt and suspenders against any other teardown timing
+  // where webContents could already be gone.
   proc.onData((data) => {
-    mainWindow?.webContents.send('pty:data', { id, data });
+    try { mainWindow?.webContents.send('pty:data', { id, data }); } catch { /* window is gone */ }
   });
   proc.onExit(({ exitCode }) => {
-    mainWindow?.webContents.send('pty:exit', { id, exitCode });
+    try { mainWindow?.webContents.send('pty:exit', { id, exitCode }); } catch { /* window is gone */ }
     ptyProcesses.delete(id);
   });
 

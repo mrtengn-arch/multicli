@@ -311,3 +311,19 @@ mini indicators and the right-side dock cards. No network requests are made at a
     PROJECT.md, CLAUDE.md, README, and all code comments across main.js/preload.js/
     src/*. This is a deliberate exception to the Turkish-docs pattern used in Murat's
     other projects (see CLAUDE.md's language rule for the reasoning).
+  - **Repo made public + MIT licensed**, renamed to "MultiCli for AI Agent Management"
+    (README/package.json/window title; the GitHub URL slug stays `multicli`). Added
+    topics for discoverability. Ran a secret/token grep before flipping visibility —
+    clean.
+  - Added a Desktop shortcut (`electron.exe "<project dir>"`) so the app can be
+    launched without a terminal, ahead of real installer packaging (K9).
+  - **Fixed a real bug: closing the window with a panel open threw "Object has been
+    destroyed"** (one Electron error dialog per open panel, had to click through all of
+    them). Root cause: `mainWindow` was never reset to `null` on close, so a pty's
+    `onData`/`onExit` firing after teardown called `mainWindow.webContents.send(...)`
+    on an already-destroyed object — the existing `mainWindow?.` guards were no-ops
+    against a stale non-null reference. Fixed with `mainWindow.on('closed', () => {
+    mainWindow = null; })`, wrapped the two `.send()` calls in try/catch as
+    defense-in-depth, and added a top-level `process.on('uncaughtException', ...)`
+    safety net so a future bug like this logs instead of crashing the app with a
+    dialog. Reproduced and verified fixed (close-with-panel-open, no more dialog).
