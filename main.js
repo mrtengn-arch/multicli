@@ -1,10 +1,10 @@
 // FILE: main.js
 // PURPOSE: Electron main process — frameless window, PTY lifecycle, project-folder picker,
 //          local quota/usage scanning (see computeClaudeUsage/computeGeminiUsage below).
-// STATUS: MVP scaffold (26 Ağu 2026) — panels spawn plain shells (powershell/bash), NOT yet
-//         bound to specific agent CLIs. Session resume is future work (bkz. PROJECT.md §3.5).
-//         Quota: claude/gemini read from real local transcripts (§3.5 kısmen çözüldü);
-//         qwen/codex henüz kaynak bulunamadı, bkz. computeQwenUsage/computeCodexUsage yorumları.
+// STATUS: MVP scaffold (26 Aug 2026) — panels spawn plain shells (powershell/bash), NOT yet
+//         bound to specific agent CLIs. Session resume is future work (see PROJECT.md §3.5).
+//         Quota: claude/gemini read from real local transcripts (§3.5 partially solved);
+//         qwen/codex have no source found yet, see computeQwenUsage/computeCodexUsage comments.
 
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
@@ -74,10 +74,10 @@ ipcMain.on('window:maximize', () => {
 ipcMain.on('window:close', () => mainWindow?.close());
 
 // ---- Local quota/usage scanning (PROJECT.md §3.5) ----
-// Ağa hiç istek atmıyoruz (ai-limit-hq'daki "pasif dinleme" ruhuyla aynı) — sadece
-// yerel oturum log/transkript dosyalarını okuyoruz. "%kalan" değil, gerçek ama HAM
-// token sayısı gösteriyoruz; plan tavanını bilmediğimiz için % hesaplayamıyoruz.
-const QUOTA_WINDOW_MS = 5 * 60 * 60 * 1000; // 5 saat — Claude'un gerçek rate-limit penceresiyle aynı
+// We never make any network requests (same spirit as ai-limit-hq's "passive listening")
+// — we only read local session log/transcript files. We show a real but RAW token
+// count rather than "% remaining", since we don't know the plan cap.
+const QUOTA_WINDOW_MS = 5 * 60 * 60 * 1000; // 5 hours — matches Claude's real rate-limit window
 
 function walkFiles(dir, matchFn, maxDepth = 6, depth = 0, out = []) {
   if (depth > maxDepth) return out;
@@ -106,9 +106,9 @@ function readRecentJsonlLines(file, cutoffMs) {
   return out;
 }
 
-// Claude Code, her mesajı `~/.claude/projects/**/*.jsonl` transkriptlerine yazıyor;
-// assistant mesajlarında gerçek `message.usage` token sayıları var (input/output/
-// cache) — v1'in "yerel log tarama" yaklaşımının aynısı.
+// Claude Code writes every message to `~/.claude/projects/**/*.jsonl` transcripts;
+// assistant messages carry real `message.usage` token counts (input/output/cache) —
+// the same "scan local logs" approach v1 used.
 function computeClaudeUsage() {
   const root = path.join(os.homedir(), '.claude', 'projects');
   const cutoff = Date.now() - QUOTA_WINDOW_MS;
@@ -118,15 +118,16 @@ function computeClaudeUsage() {
   for (const file of files) {
     let stat;
     try { stat = fs.statSync(file); } catch { continue; }
-    if (stat.mtimeMs < cutoff) continue; // dosya bu pencerede hiç değişmemiş, atla
+    if (stat.mtimeMs < cutoff) continue; // file hasn't changed in this window, skip it
     for (const obj of readRecentJsonlLines(file, cutoff)) {
       if (obj.type !== 'assistant' || !obj.message?.usage) continue;
       const u = obj.message.usage;
-      // SADECE input+output — cache_read_input_tokens'ı da katarsak sayı anlamsızca
-      // şişiyor (prompt caching'de aynı büyük context her turda yeniden "okunuyor",
-      // tek bir oturumda 100M+'a çıkabiliyor — test ederken gördük). cache_read çok
-      // daha ucuza faturalanıyor ve rate-limit'e aynı ağırlıkta yansımıyor, o yüzden
-      // burada "taze" alışverişi (gerçek girdi+çıktı) gösteriyoruz.
+      // input+output ONLY — adding cache_read_input_tokens too makes the number
+      // meaninglessly huge (with prompt caching the same large context gets
+      // "re-read" every turn, we saw a single session hit 100M+ while testing).
+      // cache_read is billed far cheaper and doesn't map onto rate-limit
+      // consumption with the same weight, so here we show the "fresh" exchange
+      // (real input+output) instead.
       tokens += (u.input_tokens || 0) + (u.output_tokens || 0);
       messages++;
     }
@@ -134,8 +135,8 @@ function computeClaudeUsage() {
   return { tokens, messages };
 }
 
-// Gemini CLI, `~/.gemini/tmp/<proje>/chats/session-*.jsonl` içine her mesajda
-// `tokens: {input, output, cached, total}` yazıyor.
+// Gemini CLI writes `tokens: {input, output, cached, total}` for every message into
+// `~/.gemini/tmp/<project>/chats/session-*.jsonl`.
 function computeGeminiUsage() {
   const root = path.join(os.homedir(), '.gemini', 'tmp');
   const cutoff = Date.now() - QUOTA_WINDOW_MS;
@@ -155,19 +156,19 @@ function computeGeminiUsage() {
   return { tokens, messages };
 }
 
-// Qwen (qwen-code, gemini-cli fork'u): bu makinede `~/.qwen/tmp/**/logs.json` hep boş
-// çıktı ve `~/.qwen/projects/**/*.runtime.json` sadece process metadata'sı (pid/cwd),
-// token sayısı içermiyor — okunabilir bir yerel kaynak bulunamadı. null dönüyoruz,
-// UI "yerel veri yok" gösteriyor. Kaynak bulunursa buraya eklenecek.
+// Qwen (qwen-code, a gemini-cli fork): on this machine `~/.qwen/tmp/**/logs.json` was
+// always empty, and `~/.qwen/projects/**/*.runtime.json` is just process metadata
+// (pid/cwd), no token counts — no readable local source was found. Returns null, the
+// UI shows "no local data". Add real logic here if a source turns up.
 function computeQwenUsage() {
   return null;
 }
 
-// Codex CLI: `~/.codex/logs_2.sqlite` çoğunlukla HTTP/auth trace logu; token sayısı
-// yok. AMA codex'in kendi "app-server" JSON-RPC daemon'ında GERÇEK bir
-// `account/rateLimits/read` metodu var (codex-tui bunu kullanıyor) — ileride bir
-// JSON-RPC istemcisiyle `codex app-server`'a bağlanıp gerçek %kullanım çekilebilir.
-// Şimdilik o entegrasyon yapılmadı, null dönüyoruz.
+// Codex CLI: `~/.codex/logs_2.sqlite` is mostly an HTTP/auth trace log, no token
+// counts. BUT codex's own "app-server" JSON-RPC daemon has a REAL
+// `account/rateLimits/read` method (used by codex-tui) — a future JSON-RPC client
+// could connect to `codex app-server` and pull real % usage. Not implemented yet,
+// returns null.
 function computeCodexUsage() {
   return null;
 }
@@ -192,9 +193,10 @@ ipcMain.handle('agents:list', () => {
   }
 });
 
-// ---- Projects (Dosya menüsü) ----
-// "Proje Ekle": klasör seç + kaydedilen listeye ekle + otomatik açık proje yap.
-// "Gözat": tek seferlik klasör seç, listeye KAYDETMEZ (panel-başı geçici atama için).
+// ---- Projects (File menu) ----
+// "Add Project": pick a folder + add it to the saved list + automatically make it the
+// open project. "Browse": pick a folder once, does NOT save it to the list (used for
+// one-off per-panel assignment).
 async function browseDialog() {
   const cfg = loadConfig();
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -234,8 +236,8 @@ ipcMain.handle('projects:remove', (_event, dir) => {
   return cfg.projects;
 });
 
-// Proje atanmamış panellerin cwd fallback'i (varsayılan USERPROFILE yerine kullanıcının
-// seçtiği bir klasör). İlk açılışta bir kerelik sorulur, Dosya menüsünden değiştirilebilir.
+// cwd fallback for panels with no assigned project (a folder the user picks instead of
+// the default USERPROFILE). Asked once on first launch, changeable from the File menu.
 ipcMain.handle('settings:getDefaultBaseDir', () => {
   const cfg = loadConfig();
   return cfg.defaultBaseDir || null;
@@ -250,9 +252,9 @@ ipcMain.handle('settings:setDefaultBaseDir', async () => {
   return dir;
 });
 
-// Ajan başına glow rengi (Görünüm menüsü) — "claude her zaman turuncu, qwen her zaman
-// mor" gibi; sadece {agentId: renkAdı} persist edilir, hex değerleri renderer'daki
-// palette sözlüğünde yaşar.
+// Per-agent glow color (View menu) — e.g. "claude is always orange, qwen is always
+// purple"; only {agentId: colorKey} is persisted, the hex values live in the
+// renderer's palette dictionary.
 ipcMain.handle('settings:getAgentColors', () => {
   const cfg = loadConfig();
   return cfg.agentColors || {};

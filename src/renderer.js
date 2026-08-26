@@ -2,18 +2,19 @@
 // PURPOSE: Panel grid (spawn/resize/maximize, per-panel project folder). Each panel is
 //          directly typable (K4's "single shared input bar" was tried and dropped —
 //          user found it redundant once panels are independently focusable, same as
-//          any normal terminal multiplexer). title-bar menu wiring ("Ajanlar" menu
+//          any normal terminal multiplexer). title-bar menu wiring ("Agents" menu
 //          starts new panels on demand).
-// STATUS: MVP (26 Ağu 2026). term.onData() forwards keystrokes straight to that panel's
+// STATUS: MVP (26 Aug 2026). term.onData() forwards keystrokes straight to that panel's
 //         PTY (xterm's own encoding — no more hand-rolled key-to-escape-sequence code).
 //         Ctrl+1..8 (panel switch) and PageUp/PageDown/Ctrl+Home/Ctrl+End (scrollback)
 //         are intercepted per-panel via attachCustomKeyEventHandler before they'd
 //         otherwise be sent to the shell.
 
 // ---------------- i18n ----------------
-// Sistem diline göre (Windows/Linux fark etmez, Chromium navigator.language OS'tan
-// okur) tr/en seçilir. Şimdilik iki dil var; yeni bir string eklerken HER İKİ bloğa da
-// eklenmeli, aksi halde o dilde "undefined" görünür.
+// tr/en is picked based on the system locale (Windows or Linux, doesn't matter —
+// Chromium's navigator.language reads it from the OS). Only two languages for now;
+// when adding a new string, add it to BOTH blocks, otherwise it shows "undefined" in
+// that language.
 const STRINGS = {
   tr: {
     menuFile: 'Dosya', menuAgents: 'Ajanlar', menuView: 'Görünüm',
@@ -101,13 +102,13 @@ const savedProjectsList = document.getElementById('saved-projects-list');
 /** @type {Map<string, {term:any, fit:any, el:HTMLElement, body:HTMLElement, label:string, agent:object, projectDir:string|null}>} */
 const panels = new Map();
 let activePanelId = null;
-let openProject = null; // { name, path } | null — Dosya menüsünden "açılan" proje, yeni panellerin varsayılan cwd'si
-let savedProjects = []; // [{ name, path }] — Dosya menüsündeki kayıtlı konumlar listesi
+let openProject = null; // { name, path } | null — the project "opened" from the File menu, the default cwd for new panels
+let savedProjects = []; // [{ name, path }] — the list of saved locations in the File menu
 let availableAgents = [];
 let bodyObservers = new Map(); // panelId -> ResizeObserver
 let panelSeq = 0;
 
-// Görünüm > Aktif Panel Rengi — glow paleti (isim -> hex). "green" varsayılan.
+// View > Active Panel Color — glow palette (name -> hex). "green" is the default.
 const GLOW_PALETTE = {
   green: '#39ff88',
   orange: '#ff9f40',
@@ -126,16 +127,16 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-// Ajan başına renk ataması. Bilinmeyen bir ajan gelirse yeşile düşer.
+// Per-agent color assignment. Falls back to green for an unknown agent.
 const DEFAULT_AGENT_COLORS = { claude: 'orange', gemini: 'turquoise', qwen: 'purple', codex: 'green' };
-let agentColors = {}; // { agentId: colorKey } — settings'ten yüklenir, DEFAULT_AGENT_COLORS'ı ezer
+let agentColors = {}; // { agentId: colorKey } — loaded from settings, overrides DEFAULT_AGENT_COLORS
 
 function colorKeyForAgent(agentId) {
   return agentColors[agentId] || DEFAULT_AGENT_COLORS[agentId] || 'green';
 }
 
-// Rengi bir tek panele (globale değil, o panelin kendi DOM elementine) uygular —
-// böylece Claude turuncu, Qwen mor aynı anda yan yana durabiliyor.
+// Applies the color to a single panel (its own DOM element, not globally) — this is
+// how Claude-orange and Qwen-purple can sit side by side at the same time.
 function applyPanelGlow(el, agentId) {
   const hex = GLOW_PALETTE[colorKeyForAgent(agentId)] || GLOW_PALETTE.green;
   el.style.setProperty('--glow', hex);
@@ -180,7 +181,7 @@ function showColorPicker(anchorEl, currentKey, onPick) {
   }, 0);
 }
 
-// ---------------- Quota/usage (PROJECT.md §3.5 — gerçek yerel veri, % değil) ----------------
+// ---------------- Quota/usage (PROJECT.md §3.5 — real local data, not a percentage) ----------------
 
 function formatTokenCount(n) {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -188,9 +189,9 @@ function formatTokenCount(n) {
   return String(n);
 }
 
-// Keyfi görsel ölçek — gerçek bir plan tavanı değil, sadece dock'taki bar'ın dolu
-// görünmesi için bir referans noktası. Gerçek "%kalan" hesaplamak için plan tavanını
-// bilmemiz lazım, bu yerel dosya taramasıyla elde edilemiyor (bkz. main.js yorumları).
+// An arbitrary visual scale — not a real plan cap, just a reference point so the dock's
+// bar looks filled. Computing a real "% remaining" would require knowing the plan cap,
+// which can't be obtained from local file scanning (see the comments in main.js).
 const QUOTA_VISUAL_CAP = 1000000;
 
 async function refreshQuotas() {
@@ -276,7 +277,7 @@ function buildPanel(id, agent, projectDir) {
   el.className = 'agent-panel';
   el.dataset.id = id;
   el.style.flex = '1 1 0';
-  applyPanelGlow(el, agent.id); // ajan başına renk (K: Claude turuncu, Qwen mor vb.)
+  applyPanelGlow(el, agent.id); // per-agent color (Claude orange, Qwen purple, etc.)
 
   const head = document.createElement('div');
   head.className = 'agent-panel-head';
@@ -348,13 +349,13 @@ function buildPanel(id, agent, projectDir) {
   term.loadAddon(fit);
   term.open(body);
 
-  // Doğrudan yazılabilir panel: xterm kendi tuş->kaçış-dizisi kodlamasını yapıyor,
-  // biz sadece pty'ye iletiyoruz (K4'teki tek-global-input fikri terk edildi —
-  // kullanıcı her paneli normal bir terminal gibi tıklayıp yazabilmek istedi).
+  // Directly typable panel: xterm does its own key-to-escape-sequence encoding, we
+  // just forward it to the pty (the K4 single-global-input idea was dropped — the
+  // user wanted to click and type into each panel like a normal terminal).
   term.onData((data) => window.multicli.pty.write(id, data));
 
-  // Ctrl+1..8 (panel değiştir) ve PageUp/PageDown/Ctrl+Home/Ctrl+End (scrollback)
-  // shell'e gitmeden burada yakalanıyor; başka her şey normal şekilde iletiliyor.
+  // Ctrl+1..8 (panel switch) and PageUp/PageDown/Ctrl+Home/Ctrl+End (scrollback) are
+  // intercepted here before reaching the shell; everything else is forwarded normally.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     if (e.ctrlKey && /^[1-8]$/.test(e.key)) {
@@ -471,13 +472,15 @@ function fitAllPanels() {
 // ---------------- Start / close / reassign ----------------
 
 async function startAgentPanel(agent) {
-  // Açık proje varsa yeni panel otomatik onun içinde başlar; farklı/başka bir konum
-  // istenirse panel açıldıktan sonra 📁 butonuyla o panele özel değiştirilebilir.
+  // If a project is open, the new panel starts in it automatically; if a different
+  // location is wanted, it can be changed for just this panel afterwards via the 📁
+  // button.
   const dir = openProject?.path ?? null;
   const id = `${agent.id}-${++panelSeq}`;
   const el = buildPanel(id, agent, dir);
 
-  // Yeni paneli mevcutların yanına ekleyip tüm grid'i yeniden düzenle (var olanlar korunur).
+  // Add the new panel next to the existing ones and re-lay out the whole grid
+  // (existing panels are preserved).
   rebuildGridLayout();
 
   await window.multicli.pty.spawn(id, dir);
@@ -522,8 +525,8 @@ async function reassignPanelProject(id, anchorEl) {
   });
 }
 
-// Küçük, kayıtlı projeler + "Gözat" + "Projesiz" seçenekli açılır liste.
-// anchorEl'in altında konumlanır; onPick(dirOrNull) seçim yapılınca çağrılır.
+// A small dropdown offering saved projects + "Browse" + "No Project".
+// Positioned below anchorEl; onPick(dirOrNull) is called once a choice is made.
 function showProjectPicker(anchorEl, onPick) {
   document.querySelectorAll('.project-picker').forEach((el) => el.remove());
 
@@ -699,8 +702,9 @@ function buildAgentMenu(agents) {
 
   defaultBaseDir = await window.multicli.settings.getDefaultBaseDir();
   if (!defaultBaseDir) {
-    // İlk kurulum: proje atanmamış panellerin nereden başlayacağını bir kere sor.
-    // İptal edilirse sessizce geçilir, main.js zaten USERPROFILE'a düşer.
+    // First run: ask once where panels with no assigned project should start from.
+    // If cancelled, this is silently skipped — main.js already falls back to
+    // USERPROFILE.
     defaultBaseDir = await window.multicli.settings.setDefaultBaseDir();
   }
   refreshDefaultBaseItem();
@@ -716,8 +720,8 @@ function buildAgentMenu(agents) {
   availableAgents = await window.multicli.agents.list();
   buildAgentMenu(availableAgents);
   buildAgentColorMenu(availableAgents);
-  rebuildGridLayout(); // boş durum mesajı (panel yoksa) veya var olan panelleri döşer
+  rebuildGridLayout(); // shows the empty-state message (no panels) or lays out existing ones
 
   refreshQuotas();
-  setInterval(refreshQuotas, 45000); // pasif tarama, ağa hiç istek atmıyor — sık olabilir
+  setInterval(refreshQuotas, 45000); // passive scan, makes no network requests — fine to run often
 })();

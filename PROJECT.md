@@ -1,297 +1,313 @@
-# multicli — Proje Kaydı (PROJECT.md)
+# multicli — Project Record (PROJECT.md)
 
-> Tek terminal ortamında birden fazla AI CLI ajanını (Claude Code, Gemini CLI, Qwen, Codex...)
-> yan yana çalıştıran, kotalarını/kullanımını canlı gösteren geliştirici aracı.
+> A developer tool that runs multiple AI CLI agents (Claude Code, Gemini CLI, Qwen,
+> Codex...) side by side in a single terminal environment, showing their quota/usage live.
 
-**Durum:** 🔄 Yeniden başlatıldı (26 Ağu 2026) — v1, "hiç düşündüğüm gibi gitmedi" denip
-25 Ağu 2026'da terk edilmiş ve klasörü silinmişti (git remote yoktu, hiçbir kopyası kalmadı).
-Bu, v1'in mimari notlarından yola çıkan **v2 / daha detaylı** girişim.
-**Başlangıç:** 2026-08-26 · **Sahibi:** Murat
-
----
-
-## 1. Vizyon / Amaç
-
-$20 Claude Code limitinin projeleri kısıtlaması sorununa çözüm: plan/mimari işini Claude
-üstlensin, ağır yürütmeyi ucuz/bol kotalı modellere (Qwen/MiniMax gibi OpenRouter üzerinden
-erişilenler, Gemini, Codex) devretsin. Bunun pratik altyapısı olarak, **birden fazla AI CLI
-ajanını aynı anda, kotalarını görerek** yönetebilecek bir araç.
-
-Kök neden: [[feedback_cost_delegation]] — kullanıcı 1 Ağu 2026'da bunu net şekilde istemişti.
+**Status:** 🔄 Restarted (26 Aug 2026) — v1 was abandoned on 25 Aug 2026 ("didn't go at
+all the way I imagined") and its folder deleted (no git remote, no copy survived).
+This is **v2 / more detailed**, building on v1's architecture notes.
+**Started:** 2026-08-26 · **Owner:** Murat
 
 ---
 
-## 2. v1 — Eski Mimari (referans, kod yok/silindi)
+## 1. Vision / Purpose
 
-Aşağıdaki notlar sadece **tarihsel referans**; kod artık mevcut değil, sıfırdan yazılacak.
+A solution to the problem of the $20 Claude Code limit constraining projects: let Claude
+handle the planning/architecture work, and hand off heavy execution to cheap/generous-quota
+models (Qwen/MiniMax via OpenRouter, Gemini, Codex). As the practical infrastructure for
+that, a tool that can manage **multiple AI CLI agents at once, with their quotas visible**.
 
-**Ne yapıyordu:** Windows Terminal içinde tek pencerede birden fazla AI CLI ajanını
-(claude, gemini, qwen, codex — `agents.json`'da tanımlı, `cmd.exe /c <ajan>` ile spawn)
-yan yana panellerde çalıştıran, sağda 34 kolonluk canlı kullanım/limit paneli gösteren
-Node.js masaüstü aracıydı.
-
-**Bağımlılıklar:** `node-pty` (gerçek terminal spawn), `@xterm/headless` (her ajan için
-sanal terminal buffer).
-
-**Mimari:**
-- `index.js` — pencereyi ajan sayısına göre bölüyor (sidebar + N panel), her panel kendi
-  `node-pty` process'i + `xterm.Terminal(headless)` instance'ı
-- `limits.js` — ağ isteği yapmadan, yerel log dosyalarını tarayarak (`walk()`, max derinlik 4)
-  her ajanın kullanım/limit özetini çıkarıyor
-- F1-F8 ile panel seçimi (Windows Terminal Alt+rakamı yuttuğu için)
-- `multicli-admin.cmd` — yönetici izniyle Windows Terminal'de başlatan launcher (masaüstü
-  kısayolu vardı)
-
-**Gelişim sırası (git log, 6 commit):** temel çoklu-ajan+limit paneli → panel seçimi (F1-F8)
-→ jcode çıkarıldı, qwen+codex eklendi, renkli kart tasarımlı panel → codex kuruldu, gemini
-antigravity + qwen token kaynakları eklendi → gerçek Anthropic kota API entegrasyonu (5
-saatlik/haftalık %kalan, reset zamanı, ek kredi) → launcher Windows Terminal kullanacak
-şekilde güncellendi.
-
-**v1'den çıkarılan dersler (v2'de dikkat edilecek):**
-- Git remote hiç kurulmamıştı → v2'de erken bir noktada GitHub'a (private) taşınmalı,
-  ayrıca gece yedeği [[project_drive_backup]] kapsamına girdiğinden emin olunmalı.
-- "Hiç düşündüğüm gibi gitmedi" — memnuniyetsizliğin **tam sebebi not edilmemiş**. v2'ye
-  başlarken kullanıcıya sorulmalı: UX mi, performans mı, panel mimarisi mi sorunluydu?
+Root cause: [[feedback_cost_delegation]] — the user stated this clearly on 1 Aug 2026.
 
 ---
 
-## 3. v2 — Yeni Mimari (detaylandırılıyor)
+## 2. v1 — Old Architecture (reference only, code gone/deleted)
 
-**Stack: Electron.** (K3 — bkz. §4) v1 zaten `node-pty` + `xterm.js` kullanıyordu, bu
-büyük ölçüde taşınabilir. Claude Desktop de Electron — referans tema/his için iyi örnek.
-Tauri değerlendirildi ama pty entegrasyonu + custom title bar için v1'in JS kodunun
-neredeyse tamamen yeniden yazılması gerekirdi, vazgeçildi.
+The notes below are **historical reference only**; the code no longer exists and will be
+rewritten from scratch.
 
-*(WezTerm kurulumu (bkz. günlük) ayrı bir amaç için kaldı — v2'nin kendi Electron
-penceresi var, WezTerm'e bağımlı değil.)*
+**What it did:** A Node.js desktop tool that ran multiple AI CLI agents (claude, gemini,
+qwen, codex — defined in `agents.json`, spawned via `cmd.exe /c <agent>`) side by side in
+panels within a single Windows Terminal window, with a live 34-column usage/limit panel
+on the right.
 
-### 3.1 Pencere / Tema
+**Dependencies:** `node-pty` (real terminal spawning), `@xterm/headless` (a virtual
+terminal buffer per agent).
 
-Tek pencere, **frameless custom title bar**, Claude Desktop'a benzer koyu tema.
+**Architecture:**
+- `index.js` — split the window based on agent count (sidebar + N panels), each panel had
+  its own `node-pty` process + `xterm.Terminal(headless)` instance
+- `limits.js` — extracted each agent's usage/limit summary by scanning local log files
+  (`walk()`, max depth 4) without making any network requests
+- Panel selection via F1-F8 (since Windows Terminal swallows Alt+number)
+- `multicli-admin.cmd` — a launcher that started Windows Terminal with admin rights (had
+  a desktop shortcut)
 
-Üst bar (soldan sağa):
-1. **Sol üst:** Uygulama menüsü (Dosya, Görünüm, vb. — klasik masaüstü uygulaması gibi)
-2. **Menü kısayollarının biraz ilerisi, orta kısım:** canlı **kota/limit göstergeleri**
-   ([[project_ai_limit_hq]] tarzı — renk kodlu barlar/gauge'lar, K5/renk spec'i oradan
-   miras alınabilir: ≥80 mavi, 60-80 yeşil, 40-60 sarı, 20-40 turuncu, <20 kırmızı)
-3. **En sağ:** pencere kontrolleri (minimize / maximize / close) — frameless olduğu için
-   bunlar elle çizilecek (Electron'da native değil, custom render)
+**Development order (git log, 6 commits):** basic multi-agent + limit panel → panel
+selection (F1-F8) → jcode dropped, qwen+codex added, panel redesigned with colored cards
+→ codex set up, gemini antigravity + qwen token sources added → real Anthropic quota API
+integration (5-hour/weekly % remaining, reset time, extra credit) → launcher updated to
+use Windows Terminal.
 
-**Dosya menüsü → Projeler:** kullanıcı bir **proje klasörü** atayabiliyor. Atanan klasör,
-o projeyle ilgili her şeyin (config, oturum geçmişi, loglar) saklandığı yer oluyor —
-TripMate/M669 gibi projelerdeki "proje klasörü" alışkanlığının doğal karşılığı.
-
-**Sağ kenar — Limit Dock'u:** ekranın en sağında, [[project_ai_limit_hq]] tarzı **küçük
-bir kota takip paneli** (ikisi birden — üst bardaki özet göstergelerle birlikte yaşıyor,
-sağdaki panel detaylı görünüm). Görünürlüğü **Görünüm menüsünden aç/kapa** edilebilir
-(toggle). Genişliği sürüklenerek ayarlanabilir (bkz. §3.2 yeniden boyutlama).
-
-### 3.2 Ana İçerik — Ajan Panelleri
-
-- Ekran, ajanlar için **grid halinde panellere** bölünüyor: minimum dikey 3 bölme, büyük
-  ekranlarda 6-8 pencereye kadar genişleyebiliyor.
-- Her panel bir CLI ajanının (claude, gemini, qwen, codex...) **canlı çıktısını** gösterir
-  — v1'deki gibi `node-pty` + `xterm.js` (headless/render) ile.
-- **Önemli fark (v1'den):** her panelin kendi imleç/komut satırı YOK. Tek bir **global
-  komut girişi** var — pencerenin **en altında, yatay, ortada, biraz geniş** bir input
-  bar. Kullanıcı oraya yazıyor, girdi o an **aktif/seçili panele** gidiyor.
-- **Aktif panel seçimi:** bir panele tıklanınca aktif olur. Aktif panelin çerçevesi
-  **yeşil neon glow efekti** alır — [[project_ai_limit_hq]]'daki refresh butonunun
-  etrafındaki glow ile aynı stil/his. Böylece kullanıcı hangi ajana yazdığını görsel
-  olarak net anlıyor.
-- **Klavye kısayolu:** panel değiştirme **Ctrl+1..8** (panel sırasına göre).
-- **Yeniden boyutlama:**
-  - Ajan panelleri arası bölücüler **sürüklenerek** boyutlandırılabilir (split-pane,
-    VS Code terminal gibi).
-  - Bir panele çift tıklayınca (veya bir buton/kısayolla) o panel geçici olarak **tüm
-    alanı kaplar** (maximize/restore) — tek ajana odaklanmak için.
-  - Sağdaki limit dock'unun genişliği de sürüklenerek ayarlanabilir.
-
-### 3.3 Oturum Hafızası (Session Resume)
-
-Uygulama, Claude Code'un `--continue`/`--resume` ile **son session'ları hatırlaması**
-gibi davranmalı: pencere yeniden açıldığında (veya bir proje seçildiğinde) her panelin
-son session'ı otomatik hatırlanabilsin/devam ettirilebilsin.
-
-⚠️ **Açık soru:** Bu davranış CLI'dan CLI'ya değişir — Claude Code'un native resume
-desteği var, ama gemini/qwen/codex CLI'larının kendi session/resume mekanizmaları farklı
-(ya da yok) olabilir. Her ajan için ayrı ayrı araştırılıp `agents.json`'a resume
-komutu/flag'i olarak eklenmesi gerekecek. **v2 kod aşamasına geçmeden önce netleşecek.**
-
-### 3.4 Fizibilite Değerlendirmesi (26 Ağu 2026)
-
-Genel olarak **yüksek fizibiliteli** bir tasarım; risk iki alanda toplanıyor:
-
-- **Kolay/kanıtlanmış:** Electron+node-pty+xterm.js çoklu panel (Hyper.js emsali, v1'de
-  zaten çalışmıştı), frameless custom title bar (VS Code/Discord emsali), tek global
-  input→aktif panele `pty.write()` (N ayrı input'tan daha basit), yeşil neon glow (saf
-  CSS), Ctrl+1..8 kısayolları, split-pane resize, maximize/restore — hepsi standart,
-  düşük risk.
-- **Orta risk — kota gösterimi:** Claude için v1'in yolu (yerel log + gerçek Anthropic
-  API) kanıtlanmış. gemini/qwen/codex CLI'larının quota'ya CLI içinden erişimi standart
-  değil; bazı ajanlar için gerçek "%kalan" yerine sadece "bu session'da yakılan token"
-  gösterilebilir — hepsi için eşit kalitede veri garanti edilemez.
-- **Orta risk — session resume:** Claude Code'un `--continue`/`--resume`'u net; diğer
-  CLI'ların resume mekanizması farklı/belirsiz, her biri ayrı araştırılıp `agents.json`
-  adaptörüne eklenmesi gerekecek (biri desteklemiyorsa o ajan için "resume yok" denip
-  geçilecek).
-- **Kaynak notu:** 6-8 ajanı aynı anda ayakta tutmak = 6-8 ayrı (bazıları ağır) Node
-  process'i aynı anda RAM'de. [[project_nexus_core]]'da AIO'nun zaten RAM baskısı
-  yaşadığı not edilmiş — bu makinede/NexusCore'da çalıştırılacaksa 6-8 hedefiyle değil,
-  3-4 panelle başlayıp genişletmek daha güvenli.
-
-### 3.5 Kota Kaynakları — Durum (26 Ağu 2026, araştırıldı + kısmen uygulandı)
-
-| Ajan | Yerel kaynak | Durum |
-|------|-------------|-------|
-| **Claude** | `~/.claude/projects/**/*.jsonl` — her assistant mesajında `message.usage.{input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens}` | ✅ **Çalışıyor** — sadece input+output toplanıyor (cache_read hariç, aşağıda neden yazıyor) |
-| **Gemini** | `~/.gemini/tmp/<proje>/chats/session-*.jsonl` — her mesajda `tokens:{input,output,cached,total}` | ✅ **Çalışıyor** — `tokens.total` zaten cache hariç net değer, direkt kullanılıyor |
-| **Qwen** | `~/.qwen/tmp/**/logs.json` hep boş, `~/.qwen/projects/**/*.runtime.json` sadece pid/cwd (token yok) | ❌ Yerel kaynak bulunamadı, `computeQwenUsage()` null dönüyor, UI "yerel veri yok" gösteriyor |
-| **Codex** | `~/.codex/logs_2.sqlite` (Rust tracing/HTTP log, token yok) AMA codex'in dahili "app-server" JSON-RPC daemon'ında **gerçek** `account/rateLimits/read` metodu var (codex-tui bunu kullanıyor, `node:sqlite` ile loglardan görüldü) | ❌ Şimdilik null — JSON-RPC istemcisi yazıp `codex app-server`'a bağlanmak gerekiyor, bu oturumda yapılmadı |
-
-**Önemli düzeltme:** İlk denemede Claude için input+output+cache_read hepsi toplanmıştı,
-tek oturumda **111 milyon token** çıktı (anlamsız) — çünkü prompt caching'de aynı büyük
-context her turda yeniden "okunuyor" (`cache_read_input_tokens` tek mesajda 300K+
-olabiliyor). cache_read çok daha ucuz faturalanıyor ve rate-limit'e aynı ağırlıkta
-yansımıyor, o yüzden artık sadece "taze" input+output toplanıyor (~700K/5s gibi makul
-sayılar). **% kalan hesaplayamıyoruz** çünkü plan tavanını (5 saatlik/haftalık limit)
-yerel dosyalardan bilemiyoruz — dock'ta ham token sayısı + mesaj sayısı gösteriliyor,
-bar'ın doluluğu (`QUOTA_VISUAL_CAP=1M`) keyfi bir görsel referans, gerçek % değil.
-
-Uygulama: `main.js`'te `computeClaudeUsage()`/`computeGeminiUsage()` (dosyaları tarayıp
-5 saatlik pencerede topluyor, `quotas:get` IPC'siyle döndürüyor), renderer'da
-`refreshQuotas()` her 45 saniyede bir çekip hem üst bar mini-göstergeleri hem sağ dock
-kartlarını güncelliyor. Ağa hiç istek atılmıyor (tamamen yerel dosya okuma).
-
-### 3.6 Kalan Açık Kararlar / Sıradaki Küçük Detaylar
-
-- **Session hatırlama/seçme** (öncelik — paketlemeden önce): kullanıcı "eski session'ları
-  hatırlamak ve seçtirmek" istiyor. Claude Code'un `--continue`/`--resume`'u var; Gemini/
-  Qwen (gemini-cli fork'u) muhtemelen benzer bir checkpoint mekanizmasına sahip; Codex'in
-  kendi `codex resume --last` / `codex resume` (picker) komutu zaten var (bkz. `codex
-  --help` çıktısı). Panel açılışında (Ajanlar menüsünden ajan başlatınca) bir "son
-  session'lar" listesi gösterip seçtirmek gerekecek — her CLI'nin kendi resume komutunu
-  `agents.json`'a eklemek + UI'da bir seçim adımı eklemek yeterli olabilir.
-- Codex için gerçek `account/rateLimits/read` JSON-RPC entegrasyonu (§3.5) — kalıcı
-  gerçek %'lik veri, ama JSON-RPC istemcisi yazmak gerekiyor.
-- Qwen için hâlâ okunabilir bir yerel kaynak yok — telemetry flag'i mi gerekiyor,
-  araştırılmadı.
-- **Paketleme sırası netleşti**: yukarıdaki küçük detaylar + electron-builder/NSIS (K9).
+**Lessons learned from v1 (to watch for in v2):**
+- A git remote was never set up → in v2 it must move to GitHub (private) early on, and
+  also be confirmed to fall under the [[project_drive_backup]] nightly backup scope.
+- "Didn't go at all the way I imagined" — the **exact reason for the dissatisfaction was
+  never recorded**. When starting v2, the user should be asked: was it UX, performance,
+  or the panel architecture that was the problem?
 
 ---
 
-## 4. Kararlar Günlüğü (neden böyle)
+## 3. v2 — New Architecture (being detailed)
 
-| # | Karar | Gerekçe |
-|---|-------|---------|
-| K1 | v1'in kodu kurtarılamaz, sıfırdan yazılacak | Klasör silindi, remote yoktu |
-| K2 | v2 önce mimari tasarımı, sonra kod | Kullanıcı "daha detaylı" istedi — aceleye getirmemek için |
-| K3 | Stack: **Electron** (Tauri değil) | v1 zaten node-pty+xterm.js kullanıyordu (taşınabilir), Claude Desktop de Electron (tema referansı), Tauri'de pty+custom title bar için sıfırdan yazım gerekirdi |
-| K4 | ~~Tek global komut girişi~~ **SÜPÜRÜLDÜ (26 Ağu 2026)** — her panel kendi başına doğrudan yazılabilir | Denendi, kullanıcı gereksiz/anlamsız buldu ("her pencereye direkt yazabiliyorum, alt input işlevsiz kaldı") — normal bir terminal çoklayıcısı (tmux/VS Code) gibi tıkla-yaz daha doğal. `term.onData()` pty'ye yazıyor, xterm kendi tuş kodlamasını yapıyor (elle yazılmış `keyToSequence()` kaldırıldı) |
-| K5 | Aktif panel vurgusu: yeşil neon glow çerçeve | [[project_ai_limit_hq]]'daki refresh butonu glow efektiyle görsel tutarlılık |
-| K6 | Dosya menüsü → Projeler: proje klasörü atama | Her projenin config/session/log'u kendi klasöründe yaşasın (TripMate/M669 alışkanlığıyla tutarlı) |
-| K7 | Kota gösterimi **ikisi birden**: üst bar özet + sağ dock detay | Üst bar sade kalır ama tek bakışta özet verir; sağ dock ([[project_ai_limit_hq]] tarzı) isteyince detaya inilir. Görünüm menüsünden aç/kapa |
-| K8 | Panel değiştirme kısayolu: **Ctrl+1..8**; ajan listesi v1 ile aynı (claude/gemini/qwen/codex) | Kendi Electron penceremiz olduğu için serbestçe atanabildi; ajan listesini değiştirmeye gerek görülmedi |
-| K9 | Paketleme: **electron-builder ile küçük NSIS kurulumu** (setup.exe), portable tek-exe değil | Kullanıcı tercihi: Program Files + Başlat Menüsü kısayolu + düzgün uninstaller — Claude Desktop'un dağıtım şekliyle aynı his. Config zaten `app.getPath('userData')` (%APPDATA%) kullanıyor, bu karardan bağımsız |
-| K10 | Panel-içi klavye kısayolları `attachCustomKeyEventHandler` ile panel bazında yakalanıyor (Ctrl+1..8 panel değiştir, PageUp/PageDown/Ctrl+Home/Ctrl+End scrollback) | K4 terkedilince "genel pencere" seviyesinde tutulan kısayolların artık odaklı panelin kendi handler'ında yakalanması gerekti; xterm'in resmi API'si, hacky window-level guard'lardan daha sağlam |
-| K11 | **Arayüz dili sistem diline göre otomatik** (tr/en, `navigator.language`) | Kullanıcı "Windows/Linux ne kullanıyorsa o dilde gelsin" dedi; `STRINGS` sözlüğü + `applyStaticI18n()` ile tüm menü/etiket/sistem mesajları kapsandı — yeni bir dil eklemek `STRINGS`'e üçüncü bir blok eklemek kadar basit |
+**Stack: Electron.** (K3 — see §4) v1 already used `node-pty` + `xterm.js`, which is
+largely portable. Claude Desktop is also Electron — a good reference for the
+theme/feel. Tauri was considered but would have required rewriting almost all of v1's JS
+for pty integration + a custom title bar, so it was dropped.
+
+*(The WezTerm install (see log) served a separate purpose — v2 has its own Electron
+window and doesn't depend on WezTerm.)*
+
+### 3.1 Window / Theme
+
+A single window, **frameless custom title bar**, dark theme similar to Claude Desktop.
+
+Top bar (left to right):
+1. **Top left:** application menu (File, View, etc. — like a classic desktop app)
+2. **A bit past the menu shortcuts, center:** live **quota/limit indicators**
+   (styled like [[project_ai_limit_hq]] — color-coded bars/gauges; K5/the color spec
+   could be inherited from there: ≥80 blue, 60-80 green, 40-60 yellow, 20-40 orange,
+   <20 red)
+3. **Far right:** window controls (minimize / maximize / close) — since the window is
+   frameless, these are hand-drawn (not native in Electron, custom rendered)
+
+**File menu → Projects:** the user can assign a **project folder**. The assigned folder
+becomes where everything related to that project (config, session history, logs) is
+stored — the natural counterpart to the "project folder" habit from projects like
+TripMate/M669.
+
+**Right edge — Limit Dock:** on the far right of the screen, a **small quota tracking
+panel** in the style of [[project_ai_limit_hq]] (both at once — it lives alongside the
+summary indicators in the top bar, this panel is the detailed view). Its visibility can
+be **toggled from the View menu**. Its width can be adjusted by dragging (see §3.2
+resizing).
+
+### 3.2 Main Content — Agent Panels
+
+- The screen is split into a **grid of panels** for agents: at least 3 columns, expanding
+  up to 6-8 windows on larger screens.
+- Each panel shows the **live output** of a CLI agent (claude, gemini, qwen, codex...) —
+  via `node-pty` + `xterm.js` (headless/render), same as in v1.
+- **Keyboard shortcut:** switch panels with **Ctrl+1..8** (by panel order).
+- **Resizing:**
+  - Dividers between agent panels can be **dragged** to resize (split-pane, like VS
+    Code's terminal).
+  - Double-clicking a panel (or a button/shortcut) makes it temporarily **fill the whole
+    area** (maximize/restore) — to focus on a single agent.
+  - The right-side limit dock's width can also be adjusted by dragging.
+
+### 3.3 Session Memory (Session Resume)
+
+The app should behave like Claude Code's `--continue`/`--resume`, **remembering recent
+sessions**: when the window is reopened (or a project is selected), each panel's last
+session should be automatically remembered/resumable.
+
+⚠️ **Open question:** This behavior varies from CLI to CLI — Claude Code has native
+resume support, but gemini/qwen/codex CLIs may have different (or no) session/resume
+mechanisms of their own. Each agent needs to be researched individually and its resume
+command/flag added to `agents.json`. **To be settled before moving to the v2 coding
+phase.**
+
+### 3.4 Feasibility Assessment (26 Aug 2026)
+
+Overall a **highly feasible** design; the risk concentrates in two areas:
+
+- **Easy/proven:** Electron+node-pty+xterm.js multi-panel (precedent: Hyper.js, and it
+  already worked in v1), frameless custom title bar (precedent: VS Code/Discord), a
+  single global input → `pty.write()` to the active panel (simpler than N separate
+  inputs), green neon glow (pure CSS), Ctrl+1..8 shortcuts, split-pane resize,
+  maximize/restore — all standard, low risk.
+- **Medium risk — quota display:** v1's approach for Claude (local logs + real Anthropic
+  API) is proven. CLI-side access to quota isn't standard for gemini/qwen/codex; some
+  agents might only be able to show "tokens burned this session" instead of a real "%
+  remaining" — equal-quality data can't be guaranteed for all of them.
+- **Medium risk — session resume:** Claude Code's `--continue`/`--resume` is clear;
+  other CLIs' resume mechanisms are different/unclear and each will need to be
+  researched and added to the `agents.json` adapter (if one doesn't support it, that
+  agent will just be marked "no resume").
+- **Resource note:** keeping 6-8 agents alive at once means 6-8 separate (some heavy)
+  Node processes in RAM simultaneously. [[project_nexus_core]] notes that the AIO
+  already experiences RAM pressure — if this runs on this machine/NexusCore, starting
+  with 3-4 panels and expanding is safer than targeting 6-8 from the start.
+
+### 3.5 Quota Sources — Status (26 Aug 2026, researched + partially implemented)
+
+| Agent | Local source | Status |
+|-------|-------------|--------|
+| **Claude** | `~/.claude/projects/**/*.jsonl` — every assistant message has `message.usage.{input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens}` | ✅ **Working** — only input+output are summed (cache_read excluded, see why below) |
+| **Gemini** | `~/.gemini/tmp/<project>/chats/session-*.jsonl` — every message has `tokens:{input,output,cached,total}` | ✅ **Working** — `tokens.total` is already a net value excluding cache, used directly |
+| **Qwen** | `~/.qwen/tmp/**/logs.json` is always empty, `~/.qwen/projects/**/*.runtime.json` is just process metadata (pid/cwd, no tokens) | ❌ No local source found; `computeQwenUsage()` returns null, the UI shows "no local data" |
+| **Codex** | `~/.codex/logs_2.sqlite` (Rust tracing/HTTP log, no tokens) BUT codex's internal "app-server" JSON-RPC daemon has a **real** `account/rateLimits/read` method (used by codex-tui, spotted in the logs via `node:sqlite`) | ❌ Still null for now — would need a JSON-RPC client wired up to `codex app-server`; not done this session |
+
+**Important correction:** the first attempt summed input+output+cache_read for Claude,
+which produced **111 million tokens** in a single session (meaningless) — because with
+prompt caching, the same large context gets "re-read" on every turn
+(`cache_read_input_tokens` alone can be 300K+ in a single message). Cache reads are
+billed far cheaper and don't map onto rate-limit consumption with the same weight, so
+now only the "fresh" input+output is summed (sane numbers, ~700K/5h). **We can't compute
+a "% remaining"** because we don't know the plan cap (5-hour/weekly limit) from local
+files alone — the dock shows the raw token count + message count, and the bar's fill
+(`QUOTA_VISUAL_CAP=1M`) is an arbitrary visual reference, not a real percentage.
+
+Implementation: in `main.js`, `computeClaudeUsage()`/`computeGeminiUsage()` scan the
+files and sum over a rolling 5-hour window, returned via the `quotas:get` IPC call; in
+the renderer, `refreshQuotas()` polls every 45 seconds and updates both the title-bar
+mini indicators and the right-side dock cards. No network requests are made at all
+(purely local file reading).
+
+### 3.6 Remaining Open Decisions / Next Small Details
+
+- **Session recall/picker** (priority — before packaging): the user wants to "remember
+  and be able to pick old sessions." Claude Code has `--continue`/`--resume`; Gemini/Qwen
+  (a fork of gemini-cli) likely have a similar checkpoint mechanism; Codex already has
+  its own `codex resume --last` / `codex resume` (picker) command (see `codex --help`
+  output). When starting a panel (from the Agents menu), a "recent sessions" list should
+  be shown to pick from — adding each CLI's own resume command to `agents.json` plus a
+  selection step in the UI may be enough.
+- Real `account/rateLimits/read` JSON-RPC integration for Codex (§3.5) — would give
+  real, persistent % data, but requires writing a JSON-RPC client.
+- Still no readable local source for Qwen — whether a telemetry flag is needed hasn't
+  been investigated.
+- **Packaging order is settled**: the small details above, then electron-builder/NSIS
+  (K9).
 
 ---
 
-## 5. Günlük (Oturum Kayıtları)
+## 4. Decision Log (why it's this way)
+
+| # | Decision | Rationale |
+|---|-------|-----------|
+| K1 | v1's code is unrecoverable, will be rewritten from scratch | Folder deleted, no remote |
+| K2 | v2 does architecture design first, then code | The user asked for "more detailed" — so as not to rush |
+| K3 | Stack: **Electron** (not Tauri) | v1 already used node-pty+xterm.js (portable), Claude Desktop is also Electron (theme reference), Tauri would have needed a from-scratch rewrite for pty+custom title bar |
+| K4 | ~~Single global command input~~ **SWEPT AWAY (26 Aug 2026)** — every panel is directly typable on its own | Tried it, the user found it unnecessary/pointless ("I can type directly into every window, the bottom input became useless") — click-and-type like a normal terminal multiplexer (tmux/VS Code) is more natural. `term.onData()` writes to the pty, xterm does its own key encoding (the hand-rolled `keyToSequence()` was removed) |
+| K5 | Active-panel highlight: green neon glow border | Visual consistency with the refresh-button glow effect in [[project_ai_limit_hq]] |
+| K6 | File menu → Projects: assign a project folder | Each project's config/session/logs should live in its own folder (consistent with the TripMate/M669 habit) |
+| K7 | Quota display is **both at once**: top-bar summary + right-dock detail | The top bar stays simple but gives a summary at a glance; the right dock (styled like [[project_ai_limit_hq]]) gives the detail when wanted. Toggled from the View menu |
+| K8 | Panel-switch shortcut: **Ctrl+1..8**; agent list same as v1 (claude/gemini/qwen/codex) | Could be freely assigned since it's our own Electron window; no need was seen to change the agent list |
+| K9 | Packaging: **a small NSIS installer via electron-builder** (setup.exe), not a portable single exe | User preference: Program Files + Start Menu shortcut + a proper uninstaller — the same feel as how Claude Desktop is distributed. Config already uses `app.getPath('userData')` (%APPDATA%), independent of this decision |
+| K10 | Panel-local keyboard shortcuts are captured per panel via `attachCustomKeyEventHandler` (Ctrl+1..8 panel switch, PageUp/PageDown/Ctrl+Home/Ctrl+End scrollback) | Once K4 was dropped, shortcuts that lived at the "general window" level needed to be captured in the focused panel's own handler instead; xterm's official API is more robust than hacky window-level guards |
+| K11 | **UI language follows the system locale automatically** (tr/en, `navigator.language`) | The user said "whatever language Windows/Linux is using, show that"; the `STRINGS` dictionary + `applyStaticI18n()` cover every menu/label/system message — adding a new language is as simple as adding a third block to `STRINGS` |
+
+---
+
+## 5. Log (Session Records)
 
 ### 2026-08-26
-- v1'in terk edildiği doğrulandı (bkz. [[project_multicli]] hafıza notu), kullanıcı v2
-  için "buna benzer ama daha detaylı" bir şey istedi.
-- `C:\Users\murat\Projects\multicli` klasörü yeniden açıldı, bu PROJECT.md ve CLAUDE.md
-  oluşturuldu.
-- Aynı oturumda WezTerm kuruldu (multicli'den bağımsız bir amaç için — §3'te not edildi).
-- v2 mimarisi detaylandırıldı: **Electron** exe, frameless custom title bar (sol üst
-  menü, orta kota göstergeleri [[project_ai_limit_hq]] tarzı, sağ pencere kontrolleri),
-  Dosya→Projeler ile proje klasörü atama, ana alanda 3-8 arası ajan paneli (grid), tek
-  global komut girişi (alt/yatay/orta) aktif panele yazıyor, aktif panel **yeşil neon
-  glow** çerçeveyle vurgulanıyor, session resume (Claude Code `--continue` benzeri)
-  hedefleniyor. Detay: PROJECT.md §3.
-- Panel değiştirme kısayolu **Ctrl+1..8**, ajan listesi v1 ile aynı (claude/gemini/qwen/
-  codex) olarak netleşti (K8). Kota gösterimi hem üst bar özet hem sağ dock detay olacak
-  (K7), sağ dock Görünüm menüsünden aç/kapa. Ajan panelleri arası split-pane resize +
-  çift tıkla maximize/restore eklendi (§3.2).
-- Fizibilite değerlendirmesi yapıldı (§3.4): genel tasarım düşük riskli, asıl belirsizlik
-  ajan-başı kota verisi ve session resume desteği; ayrıca 6-8 panel hedefi RAM açısından
-  iddialı olabilir ([[project_nexus_core]] emsali), 3-4 ile başlanması önerildi.
-- **Sıradaki adım:** §3.5'teki açık kararları netleştirmek (kota kaynakları, resume
-  komutları), sonra kod/iskelet aşamasına geçmek.
-- **İlk çalışan MVP kodlandı ve doğrulandı.** `npm init` + Electron 44/node-pty 1.1.0/
-  @xterm/xterm 6 kuruldu — node-pty N-API tabanlı olduğu için Windows prebuild'i
-  doğrudan çalıştı, `@electron/rebuild` (Python eksikliği yüzünden başarısız oldu)
-  gerekmedi, kaldırılabilir. Uygulanan/doğrulanan özellikler:
-  - Frameless pencere, custom title bar (Dosya/Ajanlar/Görünüm menüleri + mini kota
-    göstergeleri + pencere kontrolleri) — ekran görüntüsüyle doğrulandı.
-  - **2D grid panel düzeni** (satır+sütun, `layoutIds`) — ilk sürüm tek satırdı, kullanıcı
-    "dikeyde boyutlandıramadım" dedi, satır-arası `resizer-row` (row-resize) eklendi;
-    artık hem yatay hem dikey sürükle-boyutlandır çalışıyor.
-  - **"Ajanlar" menüsü ile isteğe bağlı panel başlatma** — açılışta otomatik panel YOK,
-    kullanıcı hangi ajanı istiyorsa menüden başlatıyor; panel başlığı ajan adı (+ açık
-    proje varsa "Proje - Ajan") oluyor. `agents.json`'a `command` alanı eklendi (claude/
-    gemini/qwen/codex) — panel açılınca 200ms sonra otomatik o komut yazılıyor.
-  - **Panel ekleme artık yıkıcı değil**: `rebuildGridLayout()` var olan xterm/pty
-    nesnelerini yeniden kullanıyor (DOM'da taşıyor), sadece yeni panel için yeni xterm
-    oluşturuyor — önceki "her ekleme tüm grid'i sıfırdan kurar" tasarımı (session/
-    scrollback kaybına yol açardı) terk edildi.
-  - **Panel kapatma** (✕ butonu) eklendi — pty kill + xterm dispose + grid yeniden
-    düzenleniyor.
-  - **Proje sistemi yeniden tasarlandı** (kullanıcı: "her iç pencere için ayrı proje
-    ataması olabilmeli" + "dosyada proje aç/kapat/konum ekle lazım"):
-    - Dosya menüsü artık çoklu **kayıtlı proje listesi** (`projects: [{name,path}]`,
-      `%APPDATA%\multicli-config.json`'da persist), "Proje Ekle…" ile eklenir, tıklayınca
-      "açılır" (✓ işaretli), "✕" ile listeden silinir, "Projeyi Kapat" açık projeyi
-      temizler.
-    - Yeni panel, o an **açık olan projeyi** cwd olarak alır (otomatik, dialog açmadan).
-    - Her panelin başlığındaki **📁 butonu** o TEK paneli farklı bir projeye (kayıtlı
-      listeden veya "Gözat" ile yeni bir klasöre) yeniden atayabiliyor — panelin pty'si
-      kill+respawn ediliyor, xterm'e sarı bir "proje değiştirildi" notu yazılıyor.
-  - Paketleme kararı netleşti: **electron-builder + NSIS küçük kurulum** (K9) — portable
-    tek exe değil, Program Files + Başlat Menüsü kısayolu + uninstaller; config zaten
-    `app.getPath('userData')` kullandığı için bu karardan etkilenmiyor. Henüz kurulmadı,
-    MVP arayüzü stabilleşince yapılacak.
-  - **Git repo GitHub'a taşındı**: `git init` → ilk commit → `gh repo create multicli
-    --private` ile push edildi: **https://github.com/mrtengn-arch/multicli** (private).
-    K1'in dersi ("remote'suz kalma") artık kapandı. `.gitignore` ile `node_modules`/log
-    dosyaları dışlandı; PROJECT.md/CLAUDE.md private olduğu için (ai-limit-hq'nun public
-    repo kısıtının aksine) sorunsuz commit'e girdi.
-  - Ekran görüntüsüyle doğrulama yapıldı: menüler, yeşil glow, kota dock'u, panel
-    başlığı butonları hepsi görsel olarak çalışıyor. `[process exited: 1]` kullanıcının
-    kendi testiydi (panelde `exit` yazmış) — bug değil, çözüldü.
-  - **Varsayılan Konum** eklendi (Dosya menüsü): proje atanmamış panellerin cwd fallback'i
-    artık `USERPROFILE` değil, kullanıcının seçtiği bir klasör; ilk açılışta bir kerelik
-    soruluyor, istenirse sonradan değiştirilebiliyor.
-  - **Paneller salt-okunur yapıldı** (xterm `disableStdin: true`) — kullanıcı doğrudan bir
-    panele tıklayıp yazabildiğini fark etti, bu K4'ü (tek global input) bozuyordu.
-    Bununla birlikte xterm'in dahili PageUp/PageDown scrollback kısayolları da kapandığı
-    için alt komut çubuğuna elle yeniden bağlandı (PageUp/PageDown/Ctrl+Home/Ctrl+End,
-    saf istemci-taraflı `term.scrollPages()` — pty'ye hiç gitmiyor).
-  - **Panel rengi ajan bazlı** (Görünüm menüsü) — kullanıcı "Claude turuncu, Qwen mor"
-    gibi ayrı ayrı istedi; ilk sürüm yanlışlıkla tek global renkti, düzeltildi. Renk artık
-    `--glow`/`--glow-dim` custom property'leri her panelin KENDİ DOM elementine inline
-    yazılıyor (global `:root`'a değil), varsayılanlar: claude=turuncu, gemini=turkuaz,
-    qwen=mor, codex=yeşil; `%APPDATA%`'da agentId->renk olarak persist ediliyor.
-  - ANSI renk/arkaplan desteği (git diff yeşil/kırmızı vb.) sorgulandı — ekstra iş
-    gerekmiyor, xterm.js + gerçek PTY (`name:'xterm-color'`) zaten tam destekliyor.
-  - **K4 tersine çevrildi**: kullanıcı test edince tek-global-input'u anlamsız buldu,
-    doğrudan panel-içi yazıma dönüldü (bkz. K4, K10). Alt komut çubuğu HTML/CSS/JS'den
-    tamamen kaldırıldı.
-  - **Panel başlığına renk butonu eklendi** (📁/✕'in yanına) — Görünüm menüsüne gitmeden,
-    o panelin ajan rengini doğrudan panelden değiştirebiliyorsun; ikisi aynı state'i
-    (`agentColors`) paylaşıyor, biri değişince öbürü de senkron güncelleniyor.
-  - **i18n eklendi** (K11): tüm menüler/etiketler/sistem mesajları artık `STRINGS.tr`/
-    `STRINGS.en` sözlüğünden geliyor, `navigator.language`'a göre otomatik seçiliyor.
-  - **Kota paneli gerçek veriyle çalışıyor** (§3.5): Claude + Gemini için yerel dosya
-    tarama tamamlandı ve test edildi (gerçek dosyalarla doğrulandı — ilk denemede
-    111M token gibi anlamsız bir sayı çıktı, cache_read'i dışlayarak düzeltildi). Qwen/
-    Codex için yerel kaynak yok/eksik, dürüstçe "yerel veri yok" gösteriliyor —
-    fabrikasyon yapılmadı. `codex`'in dahili `account/rateLimits/read` RPC'si keşfedildi,
-    gelecekte gerçek % için kullanılabilir (§3.5 tablosu).
-  - Oturum kapanışı: repo'nun son hali GitHub'a push edildi. Sıradaki gerçek iş
-    **session hatırlama/seçme** (§3.6) — bu tamamlanınca electron-builder paketlemesine
-    (K9) geçilecek.
+- Confirmed v1 was abandoned (see the [[project_multicli]] memory note); the user wanted
+  v2 to be "similar to that but more detailed."
+- Reopened the `C:\Users\murat\Projects\multicli` folder, created this PROJECT.md and
+  CLAUDE.md.
+- WezTerm was installed in the same session (for a purpose unrelated to multicli — noted
+  in §3).
+- v2's architecture was detailed: an **Electron** exe, frameless custom title bar (top-
+  left menu, center quota indicators styled like [[project_ai_limit_hq]], right window
+  controls), project-folder assignment via File→Projects, a 3-8 agent panel grid in the
+  main area, a single global command input (bottom/horizontal/center) typing into the
+  active panel, the active panel highlighted with a **green neon glow** border, session
+  resume (similar to Claude Code's `--continue`) targeted. Detail: PROJECT.md §3.
+- The panel-switch shortcut **Ctrl+1..8** and an agent list identical to v1
+  (claude/gemini/qwen/codex) were settled (K8). Quota display would be both a top-bar
+  summary and a right-dock detail (K7), the right dock toggled from the View menu.
+  Split-pane resize between agent panels + double-click maximize/restore were added
+  (§3.2).
+- A feasibility assessment was done (§3.4): the overall design is low-risk, the real
+  uncertainty is per-agent quota data and session-resume support; also, the 6-8 panel
+  target might be ambitious on RAM (precedent: [[project_nexus_core]]), starting with
+  3-4 was recommended.
+- **Next step:** settle the open decisions in §3.5 (quota sources, resume commands),
+  then move to the code/scaffolding phase.
+- **First working MVP coded and verified.** Set up via `npm init` + Electron 44/node-pty
+  1.1.0/@xterm/xterm 6 — since node-pty is N-API based, its Windows prebuild worked
+  directly, `@electron/rebuild` (which failed due to missing Python) wasn't needed and
+  can be removed. Features implemented/verified:
+  - Frameless window, custom title bar (File/Agents/View menus + mini quota indicators +
+    window controls) — verified with a screenshot.
+  - **2D grid panel layout** (rows+columns, `layoutIds`) — the first version was a single
+    row, the user said "I couldn't resize vertically," a row-to-row `resizer-row`
+    (row-resize) was added; both horizontal and vertical drag-resize now work.
+  - **On-demand panel start via the "Agents" menu** — no panel auto-starts at launch,
+    the user starts whichever agent they want from the menu; the panel title becomes the
+    agent name (+ "Project - Agent" if a project is open). A `command` field was added to
+    `agents.json` (claude/gemini/qwen/codex) — the panel auto-types that command 200ms
+    after opening.
+  - **Adding a panel is no longer destructive**: `rebuildGridLayout()` reuses the
+    existing xterm/pty objects (moves them in the DOM), only creating a new xterm for the
+    newly added panel — the earlier "every addition rebuilds the whole grid from
+    scratch" design (which caused loss of session/scrollback) was dropped.
+  - **Panel closing** (✕ button) added — kills the pty + disposes xterm + re-lays out the
+    grid.
+  - **The project system was redesigned** (user: "each inner window should be able to
+    have its own project assignment" + "the File menu needs open/close project, add
+    location"):
+    - The File menu now has a multi-entry **saved projects list**
+      (`projects: [{name,path}]`, persisted in `%APPDATA%\multicli-config.json`), added
+      via "Add Project…", clicking one "opens" it (✓ marked), "✕" removes it from the
+      list, "Close Project" clears the open one.
+    - A new panel takes the **currently open project** as its cwd automatically (no
+      dialog).
+    - Each panel's header has a **📁 button** that can reassign that ONE panel to a
+      different project (from the saved list or a new folder via "Browse") — the panel's
+      pty is killed+respawned, and a yellow "project changed" note is written into xterm.
+  - Packaging decision settled: **electron-builder + a small NSIS installer** (K9) — not
+    a portable single exe, a Program Files + Start Menu shortcut + uninstaller; config
+    already uses `app.getPath('userData')` so it's unaffected by this decision. Not set
+    up yet, will happen once the MVP UI stabilizes.
+  - **Git repo moved to GitHub**: `git init` → first commit → pushed with `gh repo create
+    multicli --private`: **https://github.com/mrtengn-arch/multicli** (private). K1's
+    lesson ("staying without a remote") is now closed. `.gitignore` excludes
+    `node_modules`/log files; PROJECT.md/CLAUDE.md went into the commit without issue
+    since the repo is private (unlike ai-limit-hq's public-repo restriction).
+  - Verified with a screenshot: menus, green glow, quota dock, panel-header buttons all
+    work visually. `[process exited: 1]` was the user's own test (typed `exit` in a
+    panel) — not a bug, resolved.
+  - **Default Location** added (File menu): the cwd fallback for panels with no assigned
+    project is no longer `USERPROFILE` but a folder the user picks; asked once on first
+    launch, changeable later.
+  - **Panels were made read-only** (xterm `disableStdin: true`) — the user noticed they
+    could click directly into a panel and type, which broke K4 (single global input).
+    Since this also disabled xterm's built-in PageUp/PageDown scrollback shortcuts, those
+    were rewired by hand to the bottom command bar (PageUp/PageDown/Ctrl+Home/Ctrl+End,
+    pure client-side `term.scrollPages()` — never touches the pty).
+  - **Panel color is per-agent** (View menu) — the user specifically wanted "Claude
+    orange, Qwen purple" etc. separately; the first version was mistakenly a single
+    global color, fixed. The color is now written as `--glow`/`--glow-dim` custom
+    properties inline on each panel's OWN DOM element (not the global `:root`), defaults:
+    claude=orange, gemini=turquoise, qwen=purple, codex=green; persisted in `%APPDATA%`
+    as agentId→color.
+  - ANSI color/background support (git diff green/red etc.) was asked about — no extra
+    work needed, xterm.js + a real PTY (`name:'xterm-color'`) already fully supports it.
+  - **K4 was reversed**: once the user tested it, the single-global-input idea felt
+    pointless, and direct in-panel typing was restored (see K4, K10). The bottom command
+    bar was removed entirely from HTML/CSS/JS.
+  - **A color button was added to the panel header** (next to 📁/✕) — you can change that
+    panel's agent color directly from the panel without going to the View menu; both
+    share the same state (`agentColors`), so changing one updates the other in sync.
+  - **i18n added** (K11): every menu/label/system message now comes from the
+    `STRINGS.tr`/`STRINGS.en` dictionary, chosen automatically based on
+    `navigator.language`.
+  - **The quota panel works with real data** (§3.5): local file scanning for Claude +
+    Gemini was completed and tested (verified against real files — the first attempt
+    produced a meaningless 111M-token number, fixed by excluding cache_read). For
+    Qwen/Codex, there's no/missing local source, and the UI honestly shows "no local
+    data" — nothing was fabricated. Codex's internal `account/rateLimits/read` RPC was
+    discovered and can be used for a real % in the future (§3.5 table).
+  - Session wrap-up: the latest state of the repo was pushed to GitHub. The next real
+    task is **session recall/picker** (§3.6) — once that's done, move on to
+    electron-builder packaging (K9).
+  - Added a GitHub repo description and a README with a real screenshot (4 panels
+    running live: Claude x2, Gemini, Qwen, quota dock showing real numbers).
+  - **Everything in the repo switched to English** (user's explicit call, mid-session) —
+    PROJECT.md, CLAUDE.md, README, and all code comments across main.js/preload.js/
+    src/*. This is a deliberate exception to the Turkish-docs pattern used in Murat's
+    other projects (see CLAUDE.md's language rule for the reasoning).

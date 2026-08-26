@@ -1,15 +1,16 @@
 {
   "name": "multicli",
+  "productName": "MultiCli for AI Agent Management",
   "version": "0.1.0",
-  "description": "Tek pencerede birden fazla AI CLI ajanini yan yana calistiran masaustu araci",
+  "description": "Desktop app that runs multiple AI CLI agents side by side in one window",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Murat",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
