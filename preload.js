@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld('multicli', {
   agents: {
     list: () => ipcRenderer.invoke('agents:list'),
   },
+  quotas: {
+    get: () => ipcRenderer.invoke('quotas:get'),
+  },
   pty: {
     spawn: (id, cwd, cols, rows) => ipcRenderer.invoke('pty:spawn', { id, cwd, cols, rows }),
     write: (id, data) => ipcRenderer.send('pty:write', { id, data }),

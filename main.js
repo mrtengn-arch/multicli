@@ -1,12 +1,15 @@
 // FILE: main.js
-// PURPOSE: Electron main process — frameless window, PTY lifecycle, project-folder picker.
+// PURPOSE: Electron main process — frameless window, PTY lifecycle, project-folder picker,
+//          local quota/usage scanning (see computeClaudeUsage/computeGeminiUsage below).
 // STATUS: MVP scaffold (26 Ağu 2026) — panels spawn plain shells (powershell/bash), NOT yet
-//         bound to specific agent CLIs. Auto-launch + resume + real quota are future work
-//         (bkz. PROJECT.md §3.5).
+//         bound to specific agent CLIs. Session resume is future work (bkz. PROJECT.md §3.5).
+//         Quota: claude/gemini read from real local transcripts (§3.5 kısmen çözüldü);
+//         qwen/codex henüz kaynak bulunamadı, bkz. computeQwenUsage/computeCodexUsage yorumları.
 
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const pty = require('node-pty');
 
 const isWin = process.platform === 'win32';
@@ -69,6 +72,116 @@ ipcMain.on('window:maximize', () => {
   else mainWindow.maximize();
 });
 ipcMain.on('window:close', () => mainWindow?.close());
+
+// ---- Local quota/usage scanning (PROJECT.md §3.5) ----
+// Ağa hiç istek atmıyoruz (ai-limit-hq'daki "pasif dinleme" ruhuyla aynı) — sadece
+// yerel oturum log/transkript dosyalarını okuyoruz. "%kalan" değil, gerçek ama HAM
+// token sayısı gösteriyoruz; plan tavanını bilmediğimiz için % hesaplayamıyoruz.
+const QUOTA_WINDOW_MS = 5 * 60 * 60 * 1000; // 5 saat — Claude'un gerçek rate-limit penceresiyle aynı
+
+function walkFiles(dir, matchFn, maxDepth = 6, depth = 0, out = []) {
+  if (depth > maxDepth) return out;
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) walkFiles(full, matchFn, maxDepth, depth + 1, out);
+    else if (matchFn(e.name)) out.push(full);
+  }
+  return out;
+}
+
+function readRecentJsonlLines(file, cutoffMs) {
+  let content;
+  try { content = fs.readFileSync(file, 'utf8'); } catch { return []; }
+  const out = [];
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    const ts = Date.parse(obj.timestamp);
+    if (!ts || ts < cutoffMs) continue;
+    out.push(obj);
+  }
+  return out;
+}
+
+// Claude Code, her mesajı `~/.claude/projects/**/*.jsonl` transkriptlerine yazıyor;
+// assistant mesajlarında gerçek `message.usage` token sayıları var (input/output/
+// cache) — v1'in "yerel log tarama" yaklaşımının aynısı.
+function computeClaudeUsage() {
+  const root = path.join(os.homedir(), '.claude', 'projects');
+  const cutoff = Date.now() - QUOTA_WINDOW_MS;
+  let files;
+  try { files = walkFiles(root, (name) => name.endsWith('.jsonl')); } catch { return null; }
+  let tokens = 0, messages = 0;
+  for (const file of files) {
+    let stat;
+    try { stat = fs.statSync(file); } catch { continue; }
+    if (stat.mtimeMs < cutoff) continue; // dosya bu pencerede hiç değişmemiş, atla
+    for (const obj of readRecentJsonlLines(file, cutoff)) {
+      if (obj.type !== 'assistant' || !obj.message?.usage) continue;
+      const u = obj.message.usage;
+      // SADECE input+output — cache_read_input_tokens'ı da katarsak sayı anlamsızca
+      // şişiyor (prompt caching'de aynı büyük context her turda yeniden "okunuyor",
+      // tek bir oturumda 100M+'a çıkabiliyor — test ederken gördük). cache_read çok
+      // daha ucuza faturalanıyor ve rate-limit'e aynı ağırlıkta yansımıyor, o yüzden
+      // burada "taze" alışverişi (gerçek girdi+çıktı) gösteriyoruz.
+      tokens += (u.input_tokens || 0) + (u.output_tokens || 0);
+      messages++;
+    }
+  }
+  return { tokens, messages };
+}
+
+// Gemini CLI, `~/.gemini/tmp/<proje>/chats/session-*.jsonl` içine her mesajda
+// `tokens: {input, output, cached, total}` yazıyor.
+function computeGeminiUsage() {
+  const root = path.join(os.homedir(), '.gemini', 'tmp');
+  const cutoff = Date.now() - QUOTA_WINDOW_MS;
+  let files;
+  try { files = walkFiles(root, (name) => name.endsWith('.jsonl')); } catch { return null; }
+  let tokens = 0, messages = 0;
+  for (const file of files) {
+    let stat;
+    try { stat = fs.statSync(file); } catch { continue; }
+    if (stat.mtimeMs < cutoff) continue;
+    for (const obj of readRecentJsonlLines(file, cutoff)) {
+      if (!obj.tokens) continue;
+      tokens += obj.tokens.total || 0;
+      messages++;
+    }
+  }
+  return { tokens, messages };
+}
+
+// Qwen (qwen-code, gemini-cli fork'u): bu makinede `~/.qwen/tmp/**/logs.json` hep boş
+// çıktı ve `~/.qwen/projects/**/*.runtime.json` sadece process metadata'sı (pid/cwd),
+// token sayısı içermiyor — okunabilir bir yerel kaynak bulunamadı. null dönüyoruz,
+// UI "yerel veri yok" gösteriyor. Kaynak bulunursa buraya eklenecek.
+function computeQwenUsage() {
+  return null;
+}
+
+// Codex CLI: `~/.codex/logs_2.sqlite` çoğunlukla HTTP/auth trace logu; token sayısı
+// yok. AMA codex'in kendi "app-server" JSON-RPC daemon'ında GERÇEK bir
+// `account/rateLimits/read` metodu var (codex-tui bunu kullanıyor) — ileride bir
+// JSON-RPC istemcisiyle `codex app-server`'a bağlanıp gerçek %kullanım çekilebilir.
+// Şimdilik o entegrasyon yapılmadı, null dönüyoruz.
+function computeCodexUsage() {
+  return null;
+}
+
+ipcMain.handle('quotas:get', () => {
+  const safe = (fn) => { try { return fn(); } catch { return null; } };
+  return {
+    claude: safe(computeClaudeUsage),
+    gemini: safe(computeGeminiUsage),
+    qwen: safe(computeQwenUsage),
+    codex: safe(computeCodexUsage),
+    windowMs: QUOTA_WINDOW_MS,
+  };
+});
 
 // ---- Agent list (config-driven, mirrors v1's agents.json pattern) ----
 ipcMain.handle('agents:list', () => {

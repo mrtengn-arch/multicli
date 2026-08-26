@@ -40,6 +40,8 @@ const STRINGS = {
     projectRemoved: '[proje kaldırıldı — kabuk yeniden başlatılıyor]',
     processExited: (code) => `[process exited: ${code}]`,
     colors: { green: 'Yeşil', orange: 'Turuncu', yellow: 'Sarı', red: 'Kırmızı', turquoise: 'Turkuaz', purple: 'Mor', pink: 'Pembe', white: 'Beyaz', gray: 'Gri' },
+    quotaNoData: 'yerel veri yok',
+    quotaMeta: (shortNum, messages) => `${shortNum} token · ${messages} mesaj (son 5s)`,
   },
   en: {
     menuFile: 'File', menuAgents: 'Agents', menuView: 'View',
@@ -66,6 +68,8 @@ const STRINGS = {
     projectRemoved: '[project cleared — restarting shell]',
     processExited: (code) => `[process exited: ${code}]`,
     colors: { green: 'Green', orange: 'Orange', yellow: 'Yellow', red: 'Red', turquoise: 'Turquoise', purple: 'Purple', pink: 'Pink', white: 'White', gray: 'Gray' },
+    quotaNoData: 'no local data',
+    quotaMeta: (shortNum, messages) => `${shortNum} tokens · ${messages} msgs (last 5h)`,
   },
 };
 const LOCALE = (navigator.language || 'en').toLowerCase().startsWith('tr') ? 'tr' : 'en';
@@ -174,6 +178,47 @@ function showColorPicker(anchorEl, currentKey, onPick) {
       window.removeEventListener('click', closeOnce);
     }, { once: true });
   }, 0);
+}
+
+// ---------------- Quota/usage (PROJECT.md §3.5 — gerçek yerel veri, % değil) ----------------
+
+function formatTokenCount(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(n);
+}
+
+// Keyfi görsel ölçek — gerçek bir plan tavanı değil, sadece dock'taki bar'ın dolu
+// görünmesi için bir referans noktası. Gerçek "%kalan" hesaplamak için plan tavanını
+// bilmemiz lazım, bu yerel dosya taramasıyla elde edilemiyor (bkz. main.js yorumları).
+const QUOTA_VISUAL_CAP = 1000000;
+
+async function refreshQuotas() {
+  let data;
+  try { data = await window.multicli.quotas.get(); } catch { return; }
+  if (!data) return;
+  for (const agentId of ['claude', 'gemini', 'qwen', 'codex']) {
+    const usage = data[agentId];
+    const miniDot = document.querySelector(`.mini-limit[data-agent="${agentId}"] .dot`);
+    const miniVal = document.querySelector(`.mini-limit[data-agent="${agentId}"] b`);
+    const dockDot = document.querySelector(`.dock-card[data-agent="${agentId}"] .dock-card-head .dot`);
+    const dockFill = document.querySelector(`.dock-card[data-agent="${agentId}"] .dock-bar-fill`);
+    const dockMeta = document.querySelector(`.dock-card[data-agent="${agentId}"] .dock-meta`);
+    const hasData = !!usage;
+    const dotColor = hasData ? '#39ff88' : '#4a4f5c';
+    if (miniDot) miniDot.style.background = dotColor;
+    if (dockDot) dockDot.style.background = dotColor;
+    if (hasData) {
+      const shortNum = formatTokenCount(usage.tokens);
+      if (miniVal) miniVal.textContent = shortNum;
+      if (dockFill) dockFill.style.width = `${Math.min(100, (usage.tokens / QUOTA_VISUAL_CAP) * 100)}%`;
+      if (dockMeta) dockMeta.textContent = t.quotaMeta(shortNum, usage.messages);
+    } else {
+      if (miniVal) miniVal.textContent = '—';
+      if (dockFill) dockFill.style.width = '0%';
+      if (dockMeta) dockMeta.textContent = t.quotaNoData;
+    }
+  }
 }
 
 function buildAgentColorMenu(agents) {
@@ -672,4 +717,7 @@ function buildAgentMenu(agents) {
   buildAgentMenu(availableAgents);
   buildAgentColorMenu(availableAgents);
   rebuildGridLayout(); // boş durum mesajı (panel yoksa) veya var olan panelleri döşer
+
+  refreshQuotas();
+  setInterval(refreshQuotas, 45000); // pasif tarama, ağa hiç istek atmıyor — sık olabilir
 })();

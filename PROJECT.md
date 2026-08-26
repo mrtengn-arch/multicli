@@ -141,12 +141,43 @@ Genel olarak **yüksek fizibiliteli** bir tasarım; risk iki alanda toplanıyor:
   yaşadığı not edilmiş — bu makinede/NexusCore'da çalıştırılacaksa 6-8 hedefiyle değil,
   3-4 panelle başlayıp genişletmek daha güvenli.
 
-### 3.5 Kalan Açık Kararlar
+### 3.5 Kota Kaynakları — Durum (26 Ağu 2026, araştırıldı + kısmen uygulandı)
 
-- Kota/limit verisi her ajan için nereden okunacak — Claude için v1'in `limits.js`
-  yaklaşımı (yerel log tarama) + gerçek Anthropic API var; diğer ajanlar için kaynak
-  henüz belirlenmedi.
-- Her CLI için session resume komutu/flag'i araştırılacak (bkz. §3.3, §3.4).
+| Ajan | Yerel kaynak | Durum |
+|------|-------------|-------|
+| **Claude** | `~/.claude/projects/**/*.jsonl` — her assistant mesajında `message.usage.{input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens}` | ✅ **Çalışıyor** — sadece input+output toplanıyor (cache_read hariç, aşağıda neden yazıyor) |
+| **Gemini** | `~/.gemini/tmp/<proje>/chats/session-*.jsonl` — her mesajda `tokens:{input,output,cached,total}` | ✅ **Çalışıyor** — `tokens.total` zaten cache hariç net değer, direkt kullanılıyor |
+| **Qwen** | `~/.qwen/tmp/**/logs.json` hep boş, `~/.qwen/projects/**/*.runtime.json` sadece pid/cwd (token yok) | ❌ Yerel kaynak bulunamadı, `computeQwenUsage()` null dönüyor, UI "yerel veri yok" gösteriyor |
+| **Codex** | `~/.codex/logs_2.sqlite` (Rust tracing/HTTP log, token yok) AMA codex'in dahili "app-server" JSON-RPC daemon'ında **gerçek** `account/rateLimits/read` metodu var (codex-tui bunu kullanıyor, `node:sqlite` ile loglardan görüldü) | ❌ Şimdilik null — JSON-RPC istemcisi yazıp `codex app-server`'a bağlanmak gerekiyor, bu oturumda yapılmadı |
+
+**Önemli düzeltme:** İlk denemede Claude için input+output+cache_read hepsi toplanmıştı,
+tek oturumda **111 milyon token** çıktı (anlamsız) — çünkü prompt caching'de aynı büyük
+context her turda yeniden "okunuyor" (`cache_read_input_tokens` tek mesajda 300K+
+olabiliyor). cache_read çok daha ucuz faturalanıyor ve rate-limit'e aynı ağırlıkta
+yansımıyor, o yüzden artık sadece "taze" input+output toplanıyor (~700K/5s gibi makul
+sayılar). **% kalan hesaplayamıyoruz** çünkü plan tavanını (5 saatlik/haftalık limit)
+yerel dosyalardan bilemiyoruz — dock'ta ham token sayısı + mesaj sayısı gösteriliyor,
+bar'ın doluluğu (`QUOTA_VISUAL_CAP=1M`) keyfi bir görsel referans, gerçek % değil.
+
+Uygulama: `main.js`'te `computeClaudeUsage()`/`computeGeminiUsage()` (dosyaları tarayıp
+5 saatlik pencerede topluyor, `quotas:get` IPC'siyle döndürüyor), renderer'da
+`refreshQuotas()` her 45 saniyede bir çekip hem üst bar mini-göstergeleri hem sağ dock
+kartlarını güncelliyor. Ağa hiç istek atılmıyor (tamamen yerel dosya okuma).
+
+### 3.6 Kalan Açık Kararlar / Sıradaki Küçük Detaylar
+
+- **Session hatırlama/seçme** (öncelik — paketlemeden önce): kullanıcı "eski session'ları
+  hatırlamak ve seçtirmek" istiyor. Claude Code'un `--continue`/`--resume`'u var; Gemini/
+  Qwen (gemini-cli fork'u) muhtemelen benzer bir checkpoint mekanizmasına sahip; Codex'in
+  kendi `codex resume --last` / `codex resume` (picker) komutu zaten var (bkz. `codex
+  --help` çıktısı). Panel açılışında (Ajanlar menüsünden ajan başlatınca) bir "son
+  session'lar" listesi gösterip seçtirmek gerekecek — her CLI'nin kendi resume komutunu
+  `agents.json`'a eklemek + UI'da bir seçim adımı eklemek yeterli olabilir.
+- Codex için gerçek `account/rateLimits/read` JSON-RPC entegrasyonu (§3.5) — kalıcı
+  gerçek %'lik veri, ama JSON-RPC istemcisi yazmak gerekiyor.
+- Qwen için hâlâ okunabilir bir yerel kaynak yok — telemetry flag'i mi gerekiyor,
+  araştırılmadı.
+- **Paketleme sırası netleşti**: yukarıdaki küçük detaylar + electron-builder/NSIS (K9).
 
 ---
 
@@ -224,8 +255,11 @@ Genel olarak **yüksek fizibiliteli** bir tasarım; risk iki alanda toplanıyor:
     tek exe değil, Program Files + Başlat Menüsü kısayolu + uninstaller; config zaten
     `app.getPath('userData')` kullandığı için bu karardan etkilenmiyor. Henüz kurulmadı,
     MVP arayüzü stabilleşince yapılacak.
-  - Git repo başlatıldı (`git init`) — v1'in remote'suz kalma hatası (K1) tekrarlanmasın
-    diye erken adım; henüz remote eklenmedi/commit atılmadı.
+  - **Git repo GitHub'a taşındı**: `git init` → ilk commit → `gh repo create multicli
+    --private` ile push edildi: **https://github.com/mrtengn-arch/multicli** (private).
+    K1'in dersi ("remote'suz kalma") artık kapandı. `.gitignore` ile `node_modules`/log
+    dosyaları dışlandı; PROJECT.md/CLAUDE.md private olduğu için (ai-limit-hq'nun public
+    repo kısıtının aksine) sorunsuz commit'e girdi.
   - Ekran görüntüsüyle doğrulama yapıldı: menüler, yeşil glow, kota dock'u, panel
     başlığı butonları hepsi görsel olarak çalışıyor. `[process exited: 1]` kullanıcının
     kendi testiydi (panelde `exit` yazmış) — bug değil, çözüldü.
@@ -252,3 +286,12 @@ Genel olarak **yüksek fizibiliteli** bir tasarım; risk iki alanda toplanıyor:
     (`agentColors`) paylaşıyor, biri değişince öbürü de senkron güncelleniyor.
   - **i18n eklendi** (K11): tüm menüler/etiketler/sistem mesajları artık `STRINGS.tr`/
     `STRINGS.en` sözlüğünden geliyor, `navigator.language`'a göre otomatik seçiliyor.
+  - **Kota paneli gerçek veriyle çalışıyor** (§3.5): Claude + Gemini için yerel dosya
+    tarama tamamlandı ve test edildi (gerçek dosyalarla doğrulandı — ilk denemede
+    111M token gibi anlamsız bir sayı çıktı, cache_read'i dışlayarak düzeltildi). Qwen/
+    Codex için yerel kaynak yok/eksik, dürüstçe "yerel veri yok" gösteriliyor —
+    fabrikasyon yapılmadı. `codex`'in dahili `account/rateLimits/read` RPC'si keşfedildi,
+    gelecekte gerçek % için kullanılabilir (§3.5 tablosu).
+  - Oturum kapanışı: repo'nun son hali GitHub'a push edildi. Sıradaki gerçek iş
+    **session hatırlama/seçme** (§3.6) — bu tamamlanınca electron-builder paketlemesine
+    (K9) geçilecek.
