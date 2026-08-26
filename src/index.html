@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+<title>multicli</title>
+<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <div id="titlebar">
+    <div id="titlebar-left">
+      <div class="menu">
+        <button class="menu-btn" id="menu-file-btn">Dosya</button>
+        <div class="menu-dropdown" id="file-menu">
+          <div class="menu-item" data-action="set-default-base" id="default-base-item">Varsayılan Konum…</div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" data-action="add-project" id="add-project-item">Proje Ekle…</div>
+          <div class="menu-sep"></div>
+          <div id="saved-projects-list"></div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" data-action="close-project" id="close-project-item">Projeyi Kapat</div>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-btn" id="menu-agents-btn">Ajanlar</button>
+        <div class="menu-dropdown" id="agents-menu">
+          <div class="menu-item" style="opacity:.5" id="agents-loading-item">Yükleniyor…</div>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-btn" id="menu-view-btn">Görünüm</button>
+        <div class="menu-dropdown">
+          <div class="menu-item" data-action="toggle-dock" id="toggle-dock-item">Limit Panelini Göster/Gizle</div>
+          <div class="menu-sep"></div>
+          <div class="menu-label" id="panel-colors-label">Panel Renkleri (ajan başına)</div>
+          <div id="agent-color-list"></div>
+        </div>
+      </div>
+      <span id="project-label" title="Açık proje">Proje: (seçilmedi)</span>
+    </div>
+
+    <div id="titlebar-center">
+      <!-- Kota özeti — v2 §3.1: gerçek veri bağlanana kadar placeholder -->
+      <div class="mini-limit" data-agent="claude"><span class="dot"></span>Claude <b>—</b></div>
+      <div class="mini-limit" data-agent="gemini"><span class="dot"></span>Gemini <b>—</b></div>
+      <div class="mini-limit" data-agent="qwen"><span class="dot"></span>Qwen <b>—</b></div>
+      <div class="mini-limit" data-agent="codex"><span class="dot"></span>Codex <b>—</b></div>
+    </div>
+
+    <div id="titlebar-right">
+      <button class="win-btn" data-action="minimize" title="Küçült">&#xE921;</button>
+      <button class="win-btn" data-action="maximize" title="Büyüt/Geri Al">&#xE922;</button>
+      <button class="win-btn win-close" data-action="close" title="Kapat">&#xE8BB;</button>
+    </div>
+  </div>
+
+  <div id="main-area">
+    <div id="panel-grid"></div>
+
+    <div id="limit-dock">
+      <h3 id="dock-title">Kota Takibi</h3>
+      <p class="dock-hint" id="dock-hint">Gerçek veri bağlanmadı (PROJECT.md §3.5) — yer tutucu.</p>
+      <div class="dock-card" data-agent="claude">
+        <div class="dock-card-head"><span class="dot"></span>Claude</div>
+        <div class="dock-bar"><div class="dock-bar-fill" style="width:0%"></div></div>
+        <div class="dock-meta">—</div>
+      </div>
+      <div class="dock-card" data-agent="gemini">
+        <div class="dock-card-head"><span class="dot"></span>Gemini</div>
+        <div class="dock-bar"><div class="dock-bar-fill" style="width:0%"></div></div>
+        <div class="dock-meta">—</div>
+      </div>
+      <div class="dock-card" data-agent="qwen">
+        <div class="dock-card-head"><span class="dot"></span>Qwen</div>
+        <div class="dock-bar"><div class="dock-bar-fill" style="width:0%"></div></div>
+        <div class="dock-meta">—</div>
+      </div>
+      <div class="dock-card" data-agent="codex">
+        <div class="dock-card-head"><span class="dot"></span>Codex</div>
+        <div class="dock-bar"><div class="dock-bar-fill" style="width:0%"></div></div>
+        <div class="dock-meta">—</div>
+      </div>
+    </div>
+  </div>
+
+<script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="renderer.js"></script>
+</body>
+</html>
