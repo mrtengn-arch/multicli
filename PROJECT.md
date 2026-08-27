@@ -361,4 +361,11 @@ mini indicators and the right-side dock cards. No network requests are made at a
     hardcoded `width: 5px` meant for column resizers, leaving only a ~5px-wide sliver to
     grab instead of a full-width bar — in effect, vertical resizing didn't work. Split
     `.resizer` into `.resizer-col` (width/col-resize) and `.resizer-row` (height/row-resize,
-    width left to stretch).
+    width left to stretch). **Confirmed fixed live** by the user.
+- **Known issue, not yet fixed**: column resizers (the vertical bars between side-by-side
+  panels, dragged horizontally to change width) still don't work for the user even after
+  the row-resizer fix above — reported same session, right after confirming the row fix.
+  `.resizer-col`'s CSS looks equivalent to what it was before (width/flex-basis/cursor
+  were already correct pre-fix, unlike the row case), so the root cause is probably in
+  `addResizer()`'s JS drag logic itself, not CSS — needs an interactive drag test next
+  session, not just static code reading.
