@@ -31,6 +31,9 @@ const STRINGS = {
     dockHint: 'Gerçek veri bağlanmadı (PROJECT.md §3.5) — yer tutucu.',
     emptyHint: 'Üstteki "Ajanlar" menüsünden bir ajan başlatın.',
     startAgent: (label) => `${label} başlat`,
+    sessionNew: 'Yeni Oturum',
+    sessionContinue: 'Son Oturuma Devam Et',
+    sessionResume: 'Oturum Seç…',
     colorBtnTitle: 'Panel rengini değiştir',
     folderBtnTitle: 'Bu pencere için proje klasörünü değiştir',
     closeBtnTitle: 'Paneli kapat',
@@ -43,6 +46,8 @@ const STRINGS = {
     colors: { green: 'Yeşil', orange: 'Turuncu', yellow: 'Sarı', red: 'Kırmızı', turquoise: 'Turkuaz', purple: 'Mor', pink: 'Pembe', white: 'Beyaz', gray: 'Gri' },
     quotaNoData: 'yerel veri yok',
     quotaMeta: (shortNum, messages) => `${shortNum} token · ${messages} mesaj (son 5s)`,
+    copyBtn: 'Kopyala', pasteBtn: 'Yapıştır', selectAllBtn: 'Tümünü Seç',
+    shortcutHintText: 'PageUp/PageDown kaydır · Ctrl+1–8 panel değiştir',
   },
   en: {
     menuFile: 'File', menuAgents: 'Agents', menuView: 'View',
@@ -59,6 +64,9 @@ const STRINGS = {
     dockHint: 'Not connected to real data yet (PROJECT.md §3.5) — placeholder.',
     emptyHint: 'Start an agent from the "Agents" menu above.',
     startAgent: (label) => `Start ${label}`,
+    sessionNew: 'New Session',
+    sessionContinue: 'Continue Last Session',
+    sessionResume: 'Choose Session…',
     colorBtnTitle: 'Change panel color',
     folderBtnTitle: 'Change the project folder for this panel',
     closeBtnTitle: 'Close panel',
@@ -71,6 +79,8 @@ const STRINGS = {
     colors: { green: 'Green', orange: 'Orange', yellow: 'Yellow', red: 'Red', turquoise: 'Turquoise', purple: 'Purple', pink: 'Pink', white: 'White', gray: 'Gray' },
     quotaNoData: 'no local data',
     quotaMeta: (shortNum, messages) => `${shortNum} tokens · ${messages} msgs (last 5h)`,
+    copyBtn: 'Copy', pasteBtn: 'Paste', selectAllBtn: 'Select All',
+    shortcutHintText: 'PageUp/PageDown scroll · Ctrl+1–8 switch panel',
   },
 };
 const LOCALE = (navigator.language || 'en').toLowerCase().startsWith('tr') ? 'tr' : 'en';
@@ -88,6 +98,10 @@ function applyStaticI18n() {
   document.getElementById('panel-colors-label').textContent = t.panelColorsLabel;
   document.getElementById('dock-title').textContent = t.dockTitle;
   document.getElementById('dock-hint').textContent = t.dockHint;
+  document.querySelector('#shortcut-copy-btn .btn-label').textContent = t.copyBtn;
+  document.querySelector('#shortcut-paste-btn .btn-label').textContent = t.pasteBtn;
+  document.querySelector('#shortcut-selectall-btn .btn-label').textContent = t.selectAllBtn;
+  document.getElementById('shortcut-hint-text').textContent = t.shortcutHintText;
   document.querySelector('[data-action="minimize"]').title = t.winMinimize;
   document.querySelector('[data-action="maximize"]').title = t.winMaximize;
   document.querySelector('[data-action="close"]').title = t.winClose;
@@ -128,7 +142,7 @@ function hexToRgba(hex, alpha) {
 }
 
 // Per-agent color assignment. Falls back to green for an unknown agent.
-const DEFAULT_AGENT_COLORS = { claude: 'orange', gemini: 'turquoise', qwen: 'purple', codex: 'green' };
+const DEFAULT_AGENT_COLORS = { claude: 'orange', gemini: 'turquoise', qwen: 'purple', codex: 'green', opencode: 'pink' };
 let agentColors = {}; // { agentId: colorKey } — loaded from settings, overrides DEFAULT_AGENT_COLORS
 
 function colorKeyForAgent(agentId) {
@@ -198,7 +212,7 @@ async function refreshQuotas() {
   let data;
   try { data = await window.multicli.quotas.get(); } catch { return; }
   if (!data) return;
-  for (const agentId of ['claude', 'gemini', 'qwen', 'codex']) {
+  for (const agentId of ['claude', 'gemini', 'qwen', 'codex', 'opencode']) {
     const usage = data[agentId];
     const miniDot = document.querySelector(`.mini-limit[data-agent="${agentId}"] .dot`);
     const miniVal = document.querySelector(`.mini-limit[data-agent="${agentId}"] b`);
@@ -253,7 +267,9 @@ function projectBaseName(dir) {
 }
 
 function labelFor(agent, dir) {
-  return dir ? `${projectBaseName(dir)} - ${agent.label}` : agent.label;
+  // Always show a project name at the panel's top, even when none is assigned,
+  // so it's never ambiguous which folder a given CLI window is running in.
+  return `${dir ? projectBaseName(dir) : t.noProject} - ${agent.label}`;
 }
 
 // Arrange N panels into a roughly square row/column grid so panels are resizable
@@ -354,8 +370,9 @@ function buildPanel(id, agent, projectDir) {
   // user wanted to click and type into each panel like a normal terminal).
   term.onData((data) => window.multicli.pty.write(id, data));
 
-  // Ctrl+1..8 (panel switch) and PageUp/PageDown/Ctrl+Home/Ctrl+End (scrollback) are
-  // intercepted here before reaching the shell; everything else is forwarded normally.
+  // Ctrl+1..8 (panel switch), PageUp/PageDown/Ctrl+Home/Ctrl+End (scrollback), and
+  // copy/paste/select-all are intercepted here before reaching the shell; everything
+  // else is forwarded normally.
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     if (e.ctrlKey && /^[1-8]$/.test(e.key)) {
@@ -368,6 +385,16 @@ function buildPanel(id, agent, projectDir) {
     }
     if (e.ctrlKey && e.key === 'Home') { term.scrollToTop(); return false; }
     if (e.ctrlKey && e.key === 'End') { term.scrollToBottom(); return false; }
+
+    // Copy: Ctrl+Shift+C always copies; plain Ctrl+C copies only when there's a
+    // selection (a shell already treats plain Ctrl+C as SIGINT, so that meaning is
+    // preserved whenever nothing is selected — the standard Windows Terminal behavior).
+    const wantsCopy = (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'c') ||
+      (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'c' && term.hasSelection());
+    if (wantsCopy) { copyPanelSelection(id); return false; }
+    // Paste: both Ctrl+V and Ctrl+Shift+V paste the clipboard straight into the pty.
+    if (e.ctrlKey && e.key.toLowerCase() === 'v') { pasteIntoPanel(id); return false; }
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'a') { selectAllInPanel(id); return false; }
     return true;
   });
 
@@ -471,7 +498,7 @@ function fitAllPanels() {
 
 // ---------------- Start / close / reassign ----------------
 
-async function startAgentPanel(agent) {
+async function startAgentPanel(agent, startCommand) {
   // If a project is open, the new panel starts in it automatically; if a different
   // location is wanted, it can be changed for just this panel afterwards via the 📁
   // button.
@@ -484,8 +511,9 @@ async function startAgentPanel(agent) {
   rebuildGridLayout();
 
   await window.multicli.pty.spawn(id, dir);
-  if (agent.command) {
-    setTimeout(() => window.multicli.pty.write(id, `${agent.command}\r`), 200);
+  const command = startCommand ?? agent.command;
+  if (command) {
+    setTimeout(() => window.multicli.pty.write(id, `${command}\r`), 200);
   }
   setActive(id);
   panels.get(id).term.focus();
@@ -566,6 +594,26 @@ function showProjectPicker(anchorEl, onPick) {
       window.removeEventListener('click', closeOnce);
     }, { once: true });
   }, 0);
+}
+
+// ---------------- Copy / paste / select-all (keyboard shortcuts + bottom-bar buttons) ----------------
+
+function copyPanelSelection(id) {
+  const p = panels.get(id);
+  if (!p || !p.term.hasSelection()) return;
+  window.multicli.clipboard.writeText(p.term.getSelection());
+  p.term.clearSelection();
+}
+
+function pasteIntoPanel(id) {
+  const p = panels.get(id);
+  if (!p) return;
+  const text = window.multicli.clipboard.readText();
+  if (text) window.multicli.pty.write(id, text);
+}
+
+function selectAllInPanel(id) {
+  panels.get(id)?.term.selectAll();
 }
 
 // ---------------- Active panel / glow ----------------
@@ -683,15 +731,68 @@ document.querySelector('[data-action="toggle-dock"]').addEventListener('click', 
   limitDock.classList.toggle('hidden');
 });
 
+document.querySelector('[data-action="copy"]').addEventListener('click', () => {
+  if (activePanelId) copyPanelSelection(activePanelId);
+});
+document.querySelector('[data-action="paste"]').addEventListener('click', () => {
+  if (activePanelId) { pasteIntoPanel(activePanelId); panels.get(activePanelId)?.term.focus(); }
+});
+document.querySelector('[data-action="select-all"]').addEventListener('click', () => {
+  if (activePanelId) selectAllInPanel(activePanelId);
+});
+
 function buildAgentMenu(agents) {
   agentsMenu.innerHTML = '';
   agents.forEach((agent) => {
     const item = document.createElement('div');
     item.className = 'menu-item';
     item.textContent = t.startAgent(agent.label);
-    item.addEventListener('click', () => startAgentPanel(agent));
+    item.addEventListener('click', () => {
+      // Agents with a known continue/resume flag (currently Claude and Codex) get
+      // asked which mode to start in; others just start a plain new session.
+      if (agent.continueCommand || agent.resumeCommand) {
+        showSessionModePicker(item, agent);
+      } else {
+        startAgentPanel(agent);
+      }
+    });
     agentsMenu.appendChild(item);
   });
+}
+
+// Small dropdown offering "New / Continue last / Choose session…" for agents that
+// support resuming a previous CLI session (K-decision: session recall, see PROJECT.md §3.6).
+function showSessionModePicker(anchorEl, agent) {
+  document.querySelectorAll('.project-picker').forEach((el) => el.remove());
+
+  const picker = document.createElement('div');
+  picker.className = 'project-picker';
+  const rect = anchorEl.getBoundingClientRect();
+  picker.style.top = `${rect.top}px`;
+  picker.style.left = `${Math.min(rect.right + 4, window.innerWidth - 240)}px`;
+
+  const addItem = (text, command) => {
+    const row = document.createElement('div');
+    row.className = 'menu-item';
+    row.textContent = text;
+    row.addEventListener('click', () => {
+      picker.remove();
+      startAgentPanel(agent, command);
+    });
+    picker.appendChild(row);
+  };
+
+  addItem(t.sessionNew, agent.command);
+  if (agent.continueCommand) addItem(t.sessionContinue, agent.continueCommand);
+  if (agent.resumeCommand) addItem(t.sessionResume, agent.resumeCommand);
+
+  document.body.appendChild(picker);
+  setTimeout(() => {
+    window.addEventListener('click', function closeOnce() {
+      picker.remove();
+      window.removeEventListener('click', closeOnce);
+    }, { once: true });
+  }, 0);
 }
 
 // ---------------- Boot ----------------

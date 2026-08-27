@@ -2,13 +2,20 @@
 // PURPOSE: contextBridge surface exposed to the renderer (contextIsolation stays on —
 //          renderer never gets raw Node/ipcRenderer access).
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('multicli', {
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),
     maximize: () => ipcRenderer.send('window:maximize'),
     close: () => ipcRenderer.send('window:close'),
+  },
+  // Electron's clipboard module is synchronous and available directly in the preload
+  // context — no IPC round-trip needed, which matters since these are called from
+  // inside xterm's synchronous keydown handler (see renderer.js Ctrl+C/Ctrl+V).
+  clipboard: {
+    readText: () => clipboard.readText(),
+    writeText: (text) => clipboard.writeText(text),
   },
   settings: {
     getDefaultBaseDir: () => ipcRenderer.invoke('settings:getDefaultBaseDir'),

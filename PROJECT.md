@@ -167,13 +167,9 @@ mini indicators and the right-side dock cards. No network requests are made at a
 
 ### 3.6 Remaining Open Decisions / Next Small Details
 
-- **Session recall/picker** (priority — before packaging): the user wants to "remember
-  and be able to pick old sessions." Claude Code has `--continue`/`--resume`; Gemini/Qwen
-  (a fork of gemini-cli) likely have a similar checkpoint mechanism; Codex already has
-  its own `codex resume --last` / `codex resume` (picker) command (see `codex --help`
-  output). When starting a panel (from the Agents menu), a "recent sessions" list should
-  be shown to pick from — adding each CLI's own resume command to `agents.json` plus a
-  selection step in the UI may be enough.
+- ~~Session recall/picker~~ **DONE for Claude and Codex (27 Aug 2026)** — see K12.
+  Gemini/Qwen still have no known continue/resume flag, so they only ever start a plain
+  new session for now; worth revisiting if/when one is found.
 - Real `account/rateLimits/read` JSON-RPC integration for Codex (§3.5) — would give
   real, persistent % data, but requires writing a JSON-RPC client.
 - Still no readable local source for Qwen — whether a telemetry flag is needed hasn't
@@ -198,6 +194,9 @@ mini indicators and the right-side dock cards. No network requests are made at a
 | K9 | Packaging: **a small NSIS installer via electron-builder** (setup.exe), not a portable single exe | User preference: Program Files + Start Menu shortcut + a proper uninstaller — the same feel as how Claude Desktop is distributed. Config already uses `app.getPath('userData')` (%APPDATA%), independent of this decision |
 | K10 | Panel-local keyboard shortcuts are captured per panel via `attachCustomKeyEventHandler` (Ctrl+1..8 panel switch, PageUp/PageDown/Ctrl+Home/Ctrl+End scrollback) | Once K4 was dropped, shortcuts that lived at the "general window" level needed to be captured in the focused panel's own handler instead; xterm's official API is more robust than hacky window-level guards |
 | K11 | **UI language follows the system locale automatically** (tr/en, `navigator.language`) | The user said "whatever language Windows/Linux is using, show that"; the `STRINGS` dictionary + `applyStaticI18n()` cover every menu/label/system message — adding a new language is as simple as adding a third block to `STRINGS` |
+| K12 | Agents menu offers **New / Continue Last / Choose Session…** for agents with a known resume flag (currently Claude: `-c`/`-r`, Codex: `resume --last`/`resume`); agents without one (Gemini, Qwen) just start new | Rather than guessing a common resume UX across all four CLIs, `agents.json` gained per-agent `continueCommand`/`resumeCommand` fields; the Agents-menu click only shows the extra picker (`showSessionModePicker`) when an agent actually has one |
+| K13 | Agent list extended with a 5th entry: **Open Code** (`opencode`) | User request; no known resume flag or local quota source yet, so it behaves like Gemini/Qwen (plain start, dock shows "no local data") until one is found |
+| K14 | Copy/Paste/Select-All are both keyboard shortcuts *and* buttons in a thin bar at the very bottom of the window | User pushed back twice: first wanted the shortcuts to exist at all (`Ctrl+C`/`Ctrl+V`/`Ctrl+Shift+A`, `Ctrl+C` only copies when there's a selection so `^C`-as-interrupt still works), then wanted them as clickable buttons too, not just a text hint — the actions were refactored into shared functions (`copyPanelSelection`/`pasteIntoPanel`/`selectAllInPanel`) so both paths call the same code. Buttons default to a turquoise glowing border (`--turquoise` CSS var, same hex as the Gemini panel glow) |
 
 ---
 
@@ -327,3 +326,27 @@ mini indicators and the right-side dock cards. No network requests are made at a
     defense-in-depth, and added a top-level `process.on('uncaughtException', ...)`
     safety net so a future bug like this logs instead of crashing the app with a
     dialog. Reproduced and verified fixed (close-with-panel-open, no more dialog).
+
+### 2026-08-27
+- **Session recall/picker for Claude and Codex** (K12): `agents.json` gained
+  `continueCommand`/`resumeCommand` fields; clicking those two agents in the Agents menu
+  now opens a small "New / Continue Last / Choose Session…" popup instead of always
+  starting fresh. Gemini/Qwen have no known resume flag yet, so they're unaffected.
+- **Panel titles always show a project name** — even with no project assigned, a panel
+  now reads "No Project - Claude" instead of just "Claude", so it's never ambiguous which
+  folder a window is running in.
+- **Added a 5th agent: Open Code** (`opencode`, K13) — same "honest no data" treatment as
+  Qwen/Codex in the quota dock, default panel glow color pink.
+- **Copy/Paste/Select-All** (K14): `Ctrl+C`/`Ctrl+Shift+C` copy, `Ctrl+V`/`Ctrl+Shift+V`
+  paste, `Ctrl+Shift+A` selects all — plus the same three actions as actual buttons (with
+  icons: 📋/📥/🔲) in a new thin bar at the very bottom of the window, styled with a
+  turquoise glowing border by default. Clipboard access goes through Electron's
+  synchronous `clipboard` module, exposed via preload (no IPC round-trip needed since
+  it's called from inside xterm's synchronous keydown handler).
+- **Process-management lesson**: launched the app in the background via a bash subshell
+  (`(electron.cmd . &)`) purely to screenshot-verify a change; when that backgrounded
+  bash task's job finished, it took the Electron process down with it (job-control
+  child, not properly detached) — closed a panel the user had open, with no warning.
+  Lesson: don't use a bash-backgrounded launch for throwaway verification of this app
+  again; if a screenshot check is needed, use a properly detached launch or just ask the
+  user to check visually themselves.

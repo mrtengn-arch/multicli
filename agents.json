@@ -1,6 +1,7 @@
 [
-  { "id": "claude", "label": "Claude", "command": "claude" },
+  { "id": "claude", "label": "Claude", "command": "claude", "continueCommand": "claude -c", "resumeCommand": "claude -r" },
   { "id": "gemini", "label": "Gemini", "command": "gemini" },
   { "id": "qwen", "label": "Qwen", "command": "qwen" },
-  { "id": "codex", "label": "Codex", "command": "codex" }
+  { "id": "codex", "label": "Codex", "command": "codex", "continueCommand": "codex resume --last", "resumeCommand": "codex resume" },
+  { "id": "opencode", "label": "Open Code", "command": "opencode" }
 ]

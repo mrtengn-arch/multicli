@@ -47,6 +47,7 @@
       <div class="mini-limit" data-agent="gemini"><span class="dot"></span>Gemini <b>—</b></div>
       <div class="mini-limit" data-agent="qwen"><span class="dot"></span>Qwen <b>—</b></div>
       <div class="mini-limit" data-agent="codex"><span class="dot"></span>Codex <b>—</b></div>
+      <div class="mini-limit" data-agent="opencode"><span class="dot"></span>Open Code <b>—</b></div>
     </div>
 
     <div id="titlebar-right">
@@ -82,7 +83,19 @@
         <div class="dock-bar"><div class="dock-bar-fill" style="width:0%"></div></div>
         <div class="dock-meta">—</div>
       </div>
+      <div class="dock-card" data-agent="opencode">
+        <div class="dock-card-head"><span class="dot"></span>Open Code</div>
+        <div class="dock-bar"><div class="dock-bar-fill" style="width:0%"></div></div>
+        <div class="dock-meta">—</div>
+      </div>
     </div>
+  </div>
+
+  <div id="shortcut-bar">
+    <button class="shortcut-btn" data-action="copy" title="Ctrl+C / Ctrl+Shift+C" id="shortcut-copy-btn"><span class="btn-icon">📋</span><span class="btn-label">Copy</span></button>
+    <button class="shortcut-btn" data-action="paste" title="Ctrl+V" id="shortcut-paste-btn"><span class="btn-icon">📥</span><span class="btn-label">Paste</span></button>
+    <button class="shortcut-btn" data-action="select-all" title="Ctrl+Shift+A" id="shortcut-selectall-btn"><span class="btn-icon">🔲</span><span class="btn-label">Select All</span></button>
+    <span id="shortcut-hint-text">PageUp/PageDown scroll · Ctrl+1–8 switch panel</span>
   </div>
 
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
