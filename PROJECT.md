@@ -350,3 +350,15 @@ mini indicators and the right-side dock cards. No network requests are made at a
   Lesson: don't use a bash-backgrounded launch for throwaway verification of this app
   again; if a screenshot check is needed, use a properly detached launch or just ask the
   user to check visually themselves.
+- **Two Agents-menu/layout bugs fixed**, both reported by the user after live use:
+  - Clicking "Start Claude" (or any agent with a resume flag) closed the whole Agents
+    dropdown the instant the New/Continue/Resume picker opened next to it — the click
+    bubbled to the window-level "close all open menus" listener before the picker's own
+    logic ran. Felt like losing your place mid-navigation. Fixed with `e.stopPropagation()`
+    on that one click path; picking an option still bubbles and closes everything, which
+    is the behavior we want.
+  - Row resizers (the horizontal drag bars between stacked panel rows) inherited a
+    hardcoded `width: 5px` meant for column resizers, leaving only a ~5px-wide sliver to
+    grab instead of a full-width bar — in effect, vertical resizing didn't work. Split
+    `.resizer` into `.resizer-col` (width/col-resize) and `.resizer-row` (height/row-resize,
+    width left to stretch).

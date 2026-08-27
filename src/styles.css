@@ -317,13 +317,20 @@ body {
 .xterm { height: 100%; }
 
 .resizer {
-  width: 5px;
-  cursor: col-resize;
   background: transparent;
   flex: 0 0 5px;
   position: relative;
 }
 .resizer:hover, .resizer.dragging { background: rgba(124, 108, 240, 0.4); }
+/* col = vertical bar between side-by-side panels (drags width). */
+.resizer-col { width: 5px; cursor: col-resize; }
+/* row = horizontal bar between stacked panel rows (drags height). Needs its
+   own rule: the old shared `.resizer` had a hardcoded `width: 5px`, which
+   left row resizers only 5px wide instead of spanning the full row — an
+   almost-ungrabbable sliver, which read as "can't resize vertically"
+   (27 Aug 2026 bug). Letting width default to stretch (no explicit value)
+   fixes that. */
+.resizer-row { height: 5px; cursor: row-resize; }
 
 /* ---------------- Right limit dock ---------------- */
 

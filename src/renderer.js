@@ -747,10 +747,16 @@ function buildAgentMenu(agents) {
     const item = document.createElement('div');
     item.className = 'menu-item';
     item.textContent = t.startAgent(agent.label);
-    item.addEventListener('click', () => {
+    item.addEventListener('click', (e) => {
       // Agents with a known continue/resume flag (currently Claude and Codex) get
       // asked which mode to start in; others just start a plain new session.
       if (agent.continueCommand || agent.resumeCommand) {
+        // Without this, the click bubbles to the window-level "close all open
+        // menus" listener and the Agents dropdown vanishes the instant the
+        // session-mode picker opens next to it — disorienting (27 Aug 2026 bug).
+        // Picking an option in the picker still bubbles normally and closes
+        // everything together, which is the behavior we want at that point.
+        e.stopPropagation();
         showSessionModePicker(item, agent);
       } else {
         startAgentPanel(agent);
