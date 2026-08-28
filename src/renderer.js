@@ -272,6 +272,38 @@ function labelFor(agent, dir) {
   return `${dir ? projectBaseName(dir) : t.noProject} - ${agent.label}`;
 }
 
+// Once an agent is actually running in a "Projesiz" (no project folder) panel, the
+// header is otherwise stuck on a generic placeholder with no clue which conversation
+// is which. Watch the user's own keystrokes (never the auto-injected launch command —
+// see captureTitle) and use the first line they submit as a stand-in session title,
+// same convention chat UIs use (title = first message). One-shot: whether or not the
+// first line produces a usable title, stop watching so later input can't retitle it.
+function feedTitleCandidate(id, data) {
+  const p = panels.get(id);
+  if (!p || !p.captureTitle || p.titleFromInput || p.projectDir) return;
+  for (let i = 0; i < data.length; i++) {
+    const ch = data[i];
+    if (ch === '\r' || ch === '\n') {
+      const line = p.inputLineBuf.trim();
+      p.inputLineBuf = '';
+      p.titleFromInput = true;
+      if (line) {
+        const excerpt = line.length > 40 ? `${line.slice(0, 40)}…` : line;
+        p.label = `${excerpt} - ${p.agent.label}`;
+        const titleEl = p.el.querySelector('.panel-title');
+        titleEl.textContent = p.label;
+        titleEl.title = line;
+      }
+      return;
+    }
+    if (ch === '\x7f' || ch === '\b') { p.inputLineBuf = p.inputLineBuf.slice(0, -1); continue; }
+    // Bail out (don't retitle at all) rather than risk garbage from an arrow-key/
+    // escape sequence leaking into the title — safe default, same as today's behavior.
+    if (ch === '\x1b') { p.titleFromInput = true; p.inputLineBuf = ''; return; }
+    if (ch.charCodeAt(0) >= 0x20) p.inputLineBuf += ch;
+  }
+}
+
 // Arrange N panels into a roughly square row/column grid so panels are resizable
 // both horizontally AND vertically (a single row only allows left/right resize).
 function layoutIds(ids) {
@@ -368,7 +400,10 @@ function buildPanel(id, agent, projectDir) {
   // Directly typable panel: xterm does its own key-to-escape-sequence encoding, we
   // just forward it to the pty (the K4 single-global-input idea was dropped — the
   // user wanted to click and type into each panel like a normal terminal).
-  term.onData((data) => window.multicli.pty.write(id, data));
+  term.onData((data) => {
+    window.multicli.pty.write(id, data);
+    feedTitleCandidate(id, data);
+  });
 
   // Ctrl+1..8 (panel switch), PageUp/PageDown/Ctrl+Home/Ctrl+End (scrollback), and
   // copy/paste/select-all are intercepted here before reaching the shell; everything
@@ -398,7 +433,14 @@ function buildPanel(id, agent, projectDir) {
     return true;
   });
 
-  panels.set(id, { term, fit, el, body, label: labelFor(agent, projectDir), agent, projectDir: projectDir || null });
+  panels.set(id, {
+    term, fit, el, body, label: labelFor(agent, projectDir), agent, projectDir: projectDir || null,
+    // Live-title tracking (28 Aug 2026): a "Projesiz" panel gives no clue which
+    // conversation is running in it once the agent has actually started. captureTitle
+    // is flipped on right after the launch command is sent (see startAgentPanel), so
+    // we only ever look at what the user types, never the injected launch command.
+    captureTitle: false, titleFromInput: false, inputLineBuf: '',
+  });
 
   const ro = new ResizeObserver(() => fitPanel(id));
   ro.observe(body);
@@ -460,6 +502,16 @@ function rebuildGridLayout() {
   const ids = [...panels.keys()];
   panelGrid.innerHTML = '';
 
+  // A manually-dragged resizer sets a fixed-px flex-basis directly on the two
+  // neighboring `.agent-panel` elements. Since this function reuses those same DOM
+  // nodes rather than recreating them, that pixel value survives into whatever new
+  // row/column arrangement layoutIds() produces next — harmless right after opening a
+  // panel (buildPanel() always starts it at '1 1 0'), but closing one reshuffles the
+  // survivors into a layout their old pixel sizes were never meant for, which read as
+  // "gets confused" (28 Aug 2026). Reset everyone to an even split on every structural
+  // change; live dragging within a stable layout is unaffected.
+  ids.forEach((id) => { panels.get(id).el.style.flex = '1 1 0'; });
+
   if (ids.length === 0) {
     const hint = document.createElement('div');
     hint.id = 'empty-hint';
@@ -513,7 +565,11 @@ async function startAgentPanel(agent, startCommand) {
   await window.multicli.pty.spawn(id, dir);
   const command = startCommand ?? agent.command;
   if (command) {
-    setTimeout(() => window.multicli.pty.write(id, `${command}\r`), 200);
+    setTimeout(() => {
+      window.multicli.pty.write(id, `${command}\r`);
+      const p = panels.get(id);
+      if (p) p.captureTitle = true;
+    }, 200);
   }
   setActive(id);
   panels.get(id).term.focus();

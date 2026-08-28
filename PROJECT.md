@@ -369,3 +369,25 @@ mini indicators and the right-side dock cards. No network requests are made at a
   were already correct pre-fix, unlike the row case), so the root cause is probably in
   `addResizer()`'s JS drag logic itself, not CSS — needs an interactive drag test next
   session, not just static code reading.
+
+### 2026-08-28
+- **Panel title now tracks the running conversation, not just "Projesiz"** (user request):
+  a "no project" panel gave zero clue which conversation was in it once an agent had
+  actually started. `feedTitleCandidate()` watches the user's own `term.onData` keystrokes
+  (never the auto-injected launch command — `captureTitle` only flips on after that's
+  already sent) and uses the first line they submit as a one-shot stand-in title, same
+  convention chat UIs use. Only applies to `!projectDir` panels; bails out safely (keeps
+  the old placeholder) on any escape sequence to avoid garbage from arrow keys etc.
+- **Fixed layout getting "confused" after closing a panel** (user-reported): manual
+  resizer drags set a fixed-px `flex` directly on `.agent-panel` elements; since
+  `rebuildGridLayout()` reuses those same DOM nodes rather than recreating them, the old
+  pixel value survived into whatever new row/column arrangement resulted after a close —
+  opening always looked fine because `buildPanel()` starts new panels at `1 1 0`, closing
+  didn't reset the survivors. Now `rebuildGridLayout()` resets every panel to `1 1 0` on
+  every structural change (open or close); live dragging within a stable layout is
+  unaffected.
+- **Not yet restarted/tested live this session** — user had another session running in
+  an open panel and asked not to restart the app. Both fixes above are syntax-checked
+  (`node --check`) and reasoned through carefully, but need a real restart + interactive
+  check next session before calling them verified. Also revisit the still-stale top-of-file
+  comment in `main.js` ("Session resume is future work") — that shipped 27 Aug (K12).
