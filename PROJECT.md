@@ -216,8 +216,8 @@ mini indicators and the right-side dock cards. No network requests are made at a
 | K16 | **Session persistence is "workspace restore", not a detached PTY daemon**: panel list + folders + canvas geometry are saved, and on restart each panel is relaunched with its agent's *continue* flag (`claude -c`, `codex resume --last`) plus its previous terminal output replayed as dimmed history | nodeterm gets true persistence from `tmux`, which has no Windows equivalent; real detached PTYs would mean shipping a separate always-running daemon process. Reusing K12's per-agent resume flags gets the outcome the user actually asked for ("kalıcılık") at a fraction of the cost, and the dimmed scrollback replay makes a restored panel look continuous even for agents with no resume flag (gemini/qwen/opencode) |
 | K17 | **Agent status (running / needs-you / idle / exited) is inferred from the pty stream**, not from Claude Code's hook system | Hooks would mean writing into the user's global `~/.claude/settings.json` (invasive, and outside this app's own config) and would only ever work for 1 of the 5 agents. A settle-timer plus a deliberately conservative "does the tail look like a question" regex set covers every CLI for free. Tuned to avoid false positives specifically (a bare `>`/`$` shell prompt and Claude's idle input box must NOT match) since a wrong "needs you" fires an OS notification — 15 regression cases are checked in `test/attention.test.js` (`npm test`) |
 | K18 | Board columns are **agent status**, not user-assigned buckets — so there is nothing to drag | A hand-sorted kanban would be a second state to maintain by hand; status columns fill themselves and give the actual value wanted from the board — "which of my 6 agents is stuck waiting on me right now" |
-| K19 | A panel **claims a specific session transcript** shortly after it starts (`session:claim`) — newest file in its cwd's session dir, touched since spawn, not already claimed by a sibling panel. That claimed id drives both the token badge in the panel head and which conversation a restore resumes | There is no handle tying a spawned CLI process to the file it writes, but both Claude and Gemini shard session files by cwd, which the panel knows — cwd narrows it to a folder, and the "newest unclaimed since spawn" rule picks the right file within it. Claiming is retried (3s/8s/20s, then on every token refresh) because the transcript often doesn't exist until the first exchange. Only claude/gemini have a readable local source (same constraint as §3.5); other agents render nothing rather than a `0` that would read as a real measurement |
-| K20 | Restore resumes **the panel's own session** (`claude -r <id>`, via `resumeCommand` + claimed id), falling back to `-c` only when no id was captured | Found the hard way on the first restore after K16 shipped (29 Aug 2026, Murat): `claude -c` means "continue the folder's most recent conversation", so restoring three Claude panels rooted in the same folder silently collapsed all three into one session. K19's per-panel session id is what makes the distinction possible |
+| K19 | A panel **claims a specific session transcript** shortly after it starts (`session:claim`) — the newest file in its cwd's session dir **created after the panel spawned** and not already claimed by a sibling. That claimed id drives both the token badge in the panel head and which conversation a restore resumes. A panel that can't find such a file claims nothing, and `quotas:getSession` returns nothing rather than falling back to the folder's newest file | There is no handle tying a spawned CLI process to the file it writes, but both Claude and Gemini shard session files by cwd, which the panel knows — cwd narrows it to a folder, and creation time picks the right file within it. **Modification time can't**: the user often has a CLI running in an ordinary terminal outside multicli in the same folder, and being active it is *always* the most recently modified file, so an mtime rule hands the panel a stranger's conversation (found this way on 29 Aug 2026 — the panel billed itself for that session's tokens and then resumed into it). Claiming is retried (3s/8s/20s, then on every token refresh) because the transcript often doesn't exist until the first exchange. Only claude/gemini have a readable local source (same constraint as §3.5); other agents render nothing rather than a `0` that would read as a real measurement. `test/session-claim.test.js` pins the behaviour |
+| K20 | Restore resumes **the panel's own session** (`claude -r <id>`). `-c` is used only when a panel is the *sole* restored panel for its (agent, folder) pair; otherwise the panel starts fresh | Found the hard way on the first restore after K16 shipped (29 Aug 2026, Murat): `claude -c` means "continue the folder's most recent conversation", so restoring three Claude panels rooted in the same folder silently collapsed all three into one. K19's session id fixes the normal case; the sibling count handles the leftover one, since firing `-c` from several panels at once can only ever be wrong. Starting fresh loses the thread, but landing in *someone else's* thread is worse, and the dimmed scrollback replay still shows what the panel was doing |
 | K21 | The bottom shortcut bar (Copy/Paste/Select All, K14) becomes **toggleable, default on** rather than deleted | Murat found it redundant in practice — PowerShell's own right-click already does copy/paste (29 Aug 2026). Deleting it would throw away working code and the keyboard-hint text it carries; a View-menu toggle keeps it for anyone who wants the buttons and costs one line of state. This supersedes K14's "buttons are always visible", not the shared-function refactor underneath it |
 
 ---
@@ -525,3 +525,47 @@ mini indicators and the right-side dock cards. No network requests are made at a
   existing per-agent color language rather than introducing a new accent.
 - **Still NOT verified interactively:** the actual restore-with-`-r` round trip, and whether
   a panel reliably claims its session within the 3 s / 8 s / 20 s retry window.
+
+#### Third pass — the same two bugs, this time diagnosed properly
+
+Both of the fixes above turned out to be treating symptoms. Murat came back with the same two
+complaints and, in the second case, the exact diagnosis.
+
+- **Session claiming was picking up a stranger's conversation.** Murat: panel 1 restored into
+  the Claude session he had open in an ordinary PowerShell window *outside* multicli, not the
+  one it had been running. `session:claim` was ranking candidates by **modification** time,
+  and a session that is actively being typed into is by definition the most recently modified
+  file in the folder — so a panel with no transcript of its own reliably stole the live one.
+  Creation time is the property that actually answers "did this panel start that session", and
+  it's distinct and reliable on NTFS (checked against real transcripts: the file the panel
+  stole was born on 26 Aug and modified seconds ago). So: sort and cut off by `birthtimeMs`,
+  `SLACK_MS` 5000 → 1000 (5 s of clock slack is a wide enough window to swallow a session the
+  user started just before the panel), and the folder-newest fallback in `quotas:getSession`
+  deleted — an unclaimed panel now shows no number instead of a neighbour's.
+  `test/session-claim.test.js` (10 cases) locks this in; its fixtures are built on disk with
+  real sleeps because birthtime can't be faked through `fs.utimes`. Confirmed it fails when
+  reverted to mtime before keeping it.
+- **The `-c` fallback made that worse, so it's now restricted.** Since a workspace saved before
+  K19 has no ids, *every* restored Claude panel fell back to `claude -c` and they all landed in
+  the same conversation — the folder's newest, which is exactly the foreign session above.
+  `restoreCommandFor(agent, sessionId, siblings)` only allows `-c` when the panel is the sole
+  restored panel for its (agent, folder) pair; two or more and they start fresh. Documented in
+  K20 — losing the thread beats landing in someone else's.
+- **Keyboard in zoomed-out panels (second attempt).** Removing the `CANVAS_INTERACTIVE_Z` guard
+  on `term.focus()` wasn't enough because the guard wasn't the whole cause: `.zoomed-out` takes
+  pointer events off the xterm body, so the mousedown target is the plain `<div>` panel, and
+  **mousedown's default action moves focus off our textarea after the handler runs**. Calling
+  `focus()` and then letting the default proceed is a no-op. `e.preventDefault()` on mousedowns
+  outside the panel head fixes it; the head is excluded so its buttons still work.
+- **Token pill contrast.** Murat found the pill unreadable — it was `--glow` text on a
+  `--glow-dim` background, i.e. tinted on tinted, and suggested cyan as orange's complement.
+  Went with dark text (`#0d1016`) on a solid `--glow` fill instead: lightness contrast is much
+  stronger than hue contrast at 10 px, and a fixed cyan would both detach the pill from its
+  agent's color and disappear against the turquoise Gemini panel.
+- **Verified:** `node --check` ×3; `npm test` → 15/15 attention + 10/10 session attribution;
+  clean `ELECTRON_ENABLE_LOGGING=1` boot with no renderer errors.
+- **Left for Murat to do by hand:** the saved workspace still holds three wrong session ids
+  claimed under the old rule. The running app rewrites that file from memory on close, so it
+  has to be cleared *after* quitting multicli —
+  `%APPDATA%\MultiCli for AI Agent Management\multicli-config.json` (note the folder is named
+  after `productName`, not `multicli`).

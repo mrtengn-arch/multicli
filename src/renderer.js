@@ -660,13 +660,19 @@ function buildPanel(id, agent, projectDir, key) {
   el.appendChild(gripE);
   el.appendChild(gripS);
   el.appendChild(gripSE); // last = on top where it overlaps the edge handles
-  el.addEventListener('mousedown', () => {
+  el.addEventListener('mousedown', (e) => {
     setActive(id);
-    // Always focus, at any zoom. What CSS scale actually breaks is xterm's *mouse*
-    // math (selection lands on the wrong cells), which `.zoomed-out` already handles by
-    // taking pointer events away from the body — the click then falls through to this
-    // handler on the panel itself. Typing was never the problem; withholding focus here
-    // just made zoomed-out panels look broken (29 Aug 2026).
+    // Always focus, at any zoom. What CSS scale actually breaks is xterm's *mouse* math
+    // (selection lands on the wrong cells), which `.zoomed-out` handles by taking pointer
+    // events off the body — the click then falls through to this handler. Typing was
+    // never the problem.
+    //
+    // preventDefault matters as much as the focus() call: when the body isn't taking
+    // pointer events the click target is this plain <div>, and mousedown's default action
+    // then moves focus off our textarea again *after* this handler runs — which is why
+    // simply calling focus() wasn't enough to fix zoomed-out typing (29 Aug 2026).
+    // Skipped for the head controls, which need their normal click behaviour.
+    if (!e.target.closest('.agent-panel-head')) e.preventDefault();
     term.focus();
   });
 
@@ -1612,14 +1618,21 @@ function showSessionModePicker(anchorEl, agent) {
 // conversation too rather than just reopening an empty shell in the right folder.
 // Agents without a continue flag (gemini/qwen/opencode) start fresh, and their
 // previous output is still replayed as dimmed history (K16).
-// Prefer resuming the panel's *own* session (`claude -r <id>`) over the folder's most
-// recent one (`claude -c`). The difference only shows up with several panels open on one
-// folder, where `-c` quietly collapsed them all into the same conversation — which is
-// exactly what happened on the first restore after K16 shipped (29 Aug 2026).
-// Without a claimed id there's nothing better to do than fall back to -c.
-function restoreCommandFor(agent, sessionId) {
+// How to relaunch a restored panel, in descending order of confidence:
+//   1. its own claimed session      -> `claude -r <id>`   (exact)
+//   2. sole panel for that folder   -> `claude -c`        (unambiguous: only one candidate)
+//   3. anything else                -> `claude`           (fresh)
+//
+// Case 3 exists because `-c` means "continue this *folder's* latest conversation", so
+// firing it from several panels rooted in the same folder drops them all into one session
+// — the bug Murat hit on the first real restore (29 Aug 2026). Starting fresh loses the
+// thread, but landing in someone else's thread is worse, and the dimmed scrollback replay
+// still shows what the panel was doing. `siblings` is how many restored panels share this
+// panel's (agent, folder) pair.
+function restoreCommandFor(agent, sessionId, siblings) {
   if (sessionId && agent.resumeCommand) return `${agent.resumeCommand} ${sessionId}`;
-  return agent.continueCommand || agent.command;
+  if (siblings === 1 && agent.continueCommand) return agent.continueCommand;
+  return agent.command;
 }
 
 async function restoreWorkspace(ws) {
@@ -1638,7 +1651,10 @@ async function restoreWorkspace(ws) {
   for (const rec of ws.panels) {
     const agent = availableAgents.find((a) => a.id === rec.agentId);
     if (!agent) continue; // agent was removed from agents.json since the last run
-    await startAgentPanel(agent, restoreCommandFor(agent, rec.sessionId), {
+    const siblings = ws.panels.filter(
+      (o) => o.agentId === rec.agentId && (o.projectDir ?? null) === (rec.projectDir ?? null),
+    ).length;
+    await startAgentPanel(agent, restoreCommandFor(agent, rec.sessionId, siblings), {
       key: rec.key,
       projectDir: rec.projectDir ?? null,
       sessionId: rec.sessionId || null,

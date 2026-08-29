@@ -250,7 +250,9 @@ function sessionDirFor(agentId, cwd) {
   return null;
 }
 
-// All .jsonl files in a session dir as { id, mtimeMs }, newest first.
+// All .jsonl files in a session dir as { id, birthtimeMs, mtimeMs }, newest-created first.
+// Both timestamps matter and they answer different questions: birthtime is "was this
+// session started by the panel that's asking", mtime is "is it still being written to".
 function sessionFilesIn(dir) {
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
@@ -259,26 +261,40 @@ function sessionFilesIn(dir) {
     if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
     let stat;
     try { stat = fs.statSync(path.join(dir, e.name)); } catch { continue; }
-    out.push({ id: e.name.slice(0, -'.jsonl'.length), mtimeMs: stat.mtimeMs });
+    out.push({
+      id: e.name.slice(0, -'.jsonl'.length),
+      birthtimeMs: stat.birthtimeMs,
+      mtimeMs: stat.mtimeMs,
+    });
   }
-  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out.sort((a, b) => b.birthtimeMs - a.birthtimeMs);
 }
 
-// Which session file belongs to a panel that started at `sinceMs`? The newest one
-// touched since then that no other panel has already claimed. `taken` is how sibling
-// panels on the same folder avoid all latching onto the same file — without it,
-// "resume my session" degenerates into "everyone resume the most recent one".
-// SLACK covers clock jitter and the CLI writing its first line a beat before we ask.
+// Which session file belongs to a panel that started at `sinceMs`? One that was *created*
+// since then and that no other panel has already claimed. `taken` is how sibling panels on
+// the same folder avoid all latching onto the same file.
 //
-// `current` is for restored panels: `claude -r <id>` may either append to that same
-// transcript or fork a new one, and only the file itself can tell us which happened.
-// If the held file has been written to since the panel spawned, it's live and stays
-// ours; otherwise the panel is free to adopt whatever its CLI actually created.
+// Created, emphatically not last-modified. The first version matched on mtime and a panel
+// promptly claimed a long-running Claude session the user had open in an ordinary
+// PowerShell window outside multicli — that transcript lives in the same cwd and, being
+// active, was always the most recently written (Murat, 29 Aug 2026). Creation time is the
+// thing that actually distinguishes "this panel started that session" from "something else
+// is using this folder". Cost of the stricter rule: a panel restored via the `claude -c`
+// fallback continues a pre-existing transcript, so it can never claim — it gets no pill and
+// no id until it's opened fresh once. Correct-or-nothing is the right side to err on here,
+// since a wrong id means restoring into someone else's conversation.
+//
+// `current` is for restored panels: `claude -r <id>` may append to that transcript or fork
+// a new one, and only the file can tell us which happened. A held file still being written
+// to stays ours (mtime, not birthtime — its birthtime is legitimately from an earlier run).
 ipcMain.handle('session:claim', (_event, { agentId, cwd, sinceMs, taken, current }) => {
   const dir = sessionDirFor(agentId, cwd);
-  if (!dir) return null;
-  const SLACK_MS = 5000;
-  const floor = (sinceMs || 0) - SLACK_MS;
+  if (!dir || !sinceMs) return current || null;
+  // Clock jitter only. Deliberately small: the CLI always creates its file *after* we
+  // spawn, so a generous slack buys nothing and reopens the original hole — a session
+  // started in another window seconds before the panel would look like the panel's own.
+  const SLACK_MS = 1000;
+  const floor = sinceMs - SLACK_MS;
   const files = sessionFilesIn(dir);
   if (current) {
     const held = files.find((f) => f.id === current);
@@ -286,7 +302,7 @@ ipcMain.handle('session:claim', (_event, { agentId, cwd, sinceMs, taken, current
   }
   const claimed = new Set(Array.isArray(taken) ? taken : []);
   for (const f of files) {
-    if (f.mtimeMs < floor) break; // sorted newest first, so nothing older can match
+    if (f.birthtimeMs < floor) break; // sorted newest-created first, so nothing older can match
     if (!claimed.has(f.id)) return f.id;
   }
   return current || null; // nothing better on offer — don't drop a known id
@@ -310,16 +326,16 @@ function readSessionUsage(agentId, file) {
   return { tokens, messages };
 }
 
-// With a sessionId this is exact per-panel accounting. Without one (the panel hasn't
-// claimed a file yet) it falls back to the newest file in the folder, which is a decent
-// guess for the common single-panel-per-folder case.
+// Only ever reports a session the panel has actually claimed. There used to be a fallback
+// to "newest file in the folder" for panels that hadn't claimed yet, which was the same
+// mistake as the mtime claim above — it happily billed a panel for an unrelated session
+// running in the same folder. A blank pill for a few seconds beats a confident wrong
+// number, and matches the rule already applied to agents with no readable transcript.
 ipcMain.handle('quotas:getSession', (_event, { agentId, cwd, sessionId }) => {
   const dir = sessionDirFor(agentId, cwd);
-  if (!dir || !cwd) return null;
+  if (!dir || !cwd || !sessionId) return null;
   try {
-    const id = sessionId || sessionFilesIn(dir)[0]?.id;
-    if (!id) return null;
-    const file = path.join(dir, `${id}.jsonl`);
+    const file = path.join(dir, `${sessionId}.jsonl`);
     if (!fs.existsSync(file)) return null;
     return readSessionUsage(agentId, file);
   } catch { /* unreadable/half-written transcript — just show nothing */ }

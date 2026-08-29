@@ -316,14 +316,19 @@ body {
   font-weight: 600;
   letter-spacing: 0.3px;
   font-variant-numeric: tabular-nums;
-  color: var(--glow);
-  background: var(--glow-dim);
+  /* Dark text on a solid bright fill, not bright-on-tinted: the first version used
+     `--glow` for both text and background and the two were too close to read (Murat,
+     29 Aug 2026). A complementary hue (cyan on orange) would read, but it would cut the
+     pill loose from its agent's color — and vanish on the turquoise Gemini panel — so
+     the contrast comes from lightness instead, which is stronger anyway. */
+  color: #0d1016;
+  background: var(--glow);
   border: 1px solid var(--glow);
-  box-shadow: 0 0 6px var(--glow-dim);
+  box-shadow: 0 0 8px var(--glow-dim);
   cursor: default;
   transition: box-shadow 0.15s ease;
 }
-.agent-panel-head .token-badge:hover { box-shadow: 0 0 10px 1px var(--glow-dim); }
+.agent-panel-head .token-badge:hover { box-shadow: 0 0 12px 2px var(--glow-dim); }
 /* Nothing to report yet (no transcript, or an agent with no readable local source) —
    an empty pill would read as "zero", which isn't what we know. */
 .agent-panel-head .token-badge:empty { display: none; }
