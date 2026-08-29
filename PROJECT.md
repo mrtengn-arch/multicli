@@ -469,6 +469,34 @@ mini indicators and the right-side dock cards. No network requests are made at a
   and whether `claude -c` in a restored panel behaves acceptably when that panel has no
   prior session to continue (it will print the CLI's own error and drop to a shell).
 
+#### Fourth pass — pushed the third-pass fixes, verified with no working screenshot, GitHub topics
+
+- **Screenshot verification came back solid black.** The Windows session was locked and the
+  display had gone to sleep (power-save) at the time — `GetWindowRect`/`IsWindowVisible`
+  confirmed the window existed, was not minimized, and was sized correctly, but
+  `CopyFromScreen` returns black for a locked/asleep console regardless. Not an app bug.
+  **Fallback: launch with `--remote-debugging-port` and talk CDP directly** (`Runtime.evaluate`
+  over the websocket) to read the live DOM instead of a pixel buffer — confirmed 3 panels
+  restored with correct titles/token counts, the quota dock, the menu, and zero console
+  errors. Worth reaching for this first, not just as a fallback, whenever the machine might
+  be locked/unattended.
+- **Committed and pushed the third-pass fixes** (session-claim birthtime/1s-slack fix, the
+  `-c`-fallback restriction, the canvas-panel focus `preventDefault()`, the token pill
+  contrast, and `test/session-claim.test.js`) that had been sitting uncommitted since they
+  were written — `7f5f56b`. `node --check` ×2 + `npm test` (15/15 + 10/10) run again
+  immediately before commit.
+- **GitHub topics for discoverability.** Compared against
+  [nodeterm](https://github.com/eneskirca/nodeterm) (1350 stars) at the user's request — it
+  tags itself with `linux`/`macos`/`tmux`/`adhd` among others, none of which fit us (we're
+  Windows-only, real `node-pty` terminals rather than a tmux backend). Added 13 topics that
+  do fit: `claude-code`, `gemini`, `codex`, `qwen`, `multi-agent`, `agent-orchestration`,
+  `canvas`, `workspace-manager`, `node-pty`, `xterm`, `windows`, `quota-tracking`,
+  `desktop-app` — on top of the 5 already set (`ai-agents`, `cli`, `developer-tools`,
+  `electron`, `terminal`).
+- **Open:** GitHub reports the repo moved to `mrtengn-arch/MultiCli` (case-only rename,
+  cause not identified — `git push` still succeeds via the redirect). Remote URL not yet
+  updated to match; low priority since pushes work either way.
+
 #### Same day, second pass — five things the user hit while actually using it
 - **Board cards hopped between columns.** Claude Code's TUI repaints itself while idle, so
   the status kept flapping running → idle → running and the card followed. Added per-panel

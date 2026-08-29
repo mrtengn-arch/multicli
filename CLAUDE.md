@@ -20,6 +20,11 @@ decision, add it to §4 with a K-number.
 - Don't use a bash-backgrounded launch of this app for throwaway screenshot verification
   — when the backgrounded shell task ends it can take the Electron process (and whatever
   panel the user had open) down with it (27 Aug 2026 lesson).
+- If the machine's session might be locked or the display asleep, a screen-capture
+  screenshot comes back solid black even though the window is real (`GetWindowRect`/
+  `IsWindowVisible` confirm it) — not an app bug. Launch with `--remote-debugging-port` and
+  verify over CDP (`Runtime.evaluate` on the websocket) instead of trusting a screenshot
+  (29 Aug 2026 lesson).
 - Don't start coding before v2's architecture is settled; implement as PROJECT.md §3
   fills in.
 
