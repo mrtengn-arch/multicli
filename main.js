@@ -5,8 +5,10 @@
 //         bound to specific agent CLIs. Session resume is future work (see PROJECT.md §3.5).
 //         Quota: claude/gemini read from real local transcripts (§3.5 partially solved);
 //         qwen/codex have no source found yet, see computeQwenUsage/computeCodexUsage comments.
+//         29 Aug 2026 (K15/K16/K17): workspace + scrollback persistence, attention
+//         notifications; see the sections near the bottom of this file.
 
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -69,7 +71,33 @@ function createWindow() {
   // error dialog) per panel that was open. Nulling it out here makes the `mainWindow?.`
   // guards already in the pty handlers actually work.
   mainWindow.on('closed', () => { mainWindow = null; });
+  // notify:attention starts the taskbar flash; without this it keeps flashing after
+  // the user has already come back to the window.
+  mainWindow.on('focus', () => { try { mainWindow?.flashFrame(false); } catch { /* noop */ } });
+
+  // Give the renderer one last chance to write the workspace + scrollback to disk
+  // before the window (and with it every xterm buffer) is gone — otherwise "restore
+  // on next launch" (K15) would always miss whatever happened since the last
+  // debounced save. The window is destroyed either when the renderer reports back or
+  // after FLUSH_TIMEOUT_MS, so a hung renderer can never make the app unclosable.
+  let flushing = false;
+  mainWindow.on('close', (e) => {
+    if (flushing || !mainWindow) return;
+    e.preventDefault();
+    flushing = true;
+    let timer = null;
+    const finish = () => {
+      clearTimeout(timer);
+      ipcMain.removeListener('workspace:flushed', finish);
+      mainWindow?.destroy();
+    };
+    timer = setTimeout(finish, FLUSH_TIMEOUT_MS);
+    ipcMain.on('workspace:flushed', finish);
+    try { mainWindow.webContents.send('workspace:flush'); } catch { finish(); }
+  });
 }
+
+const FLUSH_TIMEOUT_MS = 1500;
 
 app.whenReady().then(createWindow);
 
@@ -200,6 +228,104 @@ ipcMain.handle('quotas:get', () => {
   };
 });
 
+// ---- Per-panel ("this session") usage ----
+// Different question from the dock above: that one is a 5-hour rolling total across
+// everything, this is "what has THIS panel burned" — and, separately, "which session
+// should this panel resume". Both need the same thing: the one transcript file that
+// belongs to this panel. Both CLIs shard those by working directory:
+//   Claude — ~/.claude/projects/<cwd, every non-alphanumeric char turned into '-'>/<sessionId>.jsonl
+//   Gemini — ~/.gemini/tmp/<lowercased basename of cwd>/chats/session-*.jsonl
+// The folder alone isn't enough (three panels can share one folder), so a panel claims
+// a specific file shortly after it starts — see session:claim below. qwen/codex/opencode
+// have no readable local source (§3.5) and get nothing.
+function claudeProjectDirFor(cwd) {
+  return path.join(os.homedir(), '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
+}
+
+function sessionDirFor(agentId, cwd) {
+  if (agentId === 'claude') return claudeProjectDirFor(cwd);
+  if (agentId === 'gemini') {
+    return path.join(os.homedir(), '.gemini', 'tmp', path.basename(cwd).toLowerCase(), 'chats');
+  }
+  return null;
+}
+
+// All .jsonl files in a session dir as { id, mtimeMs }, newest first.
+function sessionFilesIn(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const out = [];
+  for (const e of entries) {
+    if (!e.isFile() || !e.name.endsWith('.jsonl')) continue;
+    let stat;
+    try { stat = fs.statSync(path.join(dir, e.name)); } catch { continue; }
+    out.push({ id: e.name.slice(0, -'.jsonl'.length), mtimeMs: stat.mtimeMs });
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+// Which session file belongs to a panel that started at `sinceMs`? The newest one
+// touched since then that no other panel has already claimed. `taken` is how sibling
+// panels on the same folder avoid all latching onto the same file — without it,
+// "resume my session" degenerates into "everyone resume the most recent one".
+// SLACK covers clock jitter and the CLI writing its first line a beat before we ask.
+//
+// `current` is for restored panels: `claude -r <id>` may either append to that same
+// transcript or fork a new one, and only the file itself can tell us which happened.
+// If the held file has been written to since the panel spawned, it's live and stays
+// ours; otherwise the panel is free to adopt whatever its CLI actually created.
+ipcMain.handle('session:claim', (_event, { agentId, cwd, sinceMs, taken, current }) => {
+  const dir = sessionDirFor(agentId, cwd);
+  if (!dir) return null;
+  const SLACK_MS = 5000;
+  const floor = (sinceMs || 0) - SLACK_MS;
+  const files = sessionFilesIn(dir);
+  if (current) {
+    const held = files.find((f) => f.id === current);
+    if (held && held.mtimeMs >= floor) return current;
+  }
+  const claimed = new Set(Array.isArray(taken) ? taken : []);
+  for (const f of files) {
+    if (f.mtimeMs < floor) break; // sorted newest first, so nothing older can match
+    if (!claimed.has(f.id)) return f.id;
+  }
+  return current || null; // nothing better on offer — don't drop a known id
+});
+
+// cutoff 0 = no time window; a session total covers the whole transcript.
+function readSessionUsage(agentId, file) {
+  let tokens = 0, messages = 0;
+  for (const obj of readRecentJsonlLines(file, 0)) {
+    if (agentId === 'claude') {
+      if (obj.type !== 'assistant' || !obj.message?.usage) continue;
+      const u = obj.message.usage;
+      // input+output only, same reasoning as computeClaudeUsage() above.
+      tokens += (u.input_tokens || 0) + (u.output_tokens || 0);
+    } else {
+      if (!obj.tokens) continue;
+      tokens += obj.tokens.total || 0;
+    }
+    messages++;
+  }
+  return { tokens, messages };
+}
+
+// With a sessionId this is exact per-panel accounting. Without one (the panel hasn't
+// claimed a file yet) it falls back to the newest file in the folder, which is a decent
+// guess for the common single-panel-per-folder case.
+ipcMain.handle('quotas:getSession', (_event, { agentId, cwd, sessionId }) => {
+  const dir = sessionDirFor(agentId, cwd);
+  if (!dir || !cwd) return null;
+  try {
+    const id = sessionId || sessionFilesIn(dir)[0]?.id;
+    if (!id) return null;
+    const file = path.join(dir, `${id}.jsonl`);
+    if (!fs.existsSync(file)) return null;
+    return readSessionUsage(agentId, file);
+  } catch { /* unreadable/half-written transcript — just show nothing */ }
+  return null;
+});
+
 // ---- Agent list (config-driven, mirrors v1's agents.json pattern) ----
 ipcMain.handle('agents:list', () => {
   try {
@@ -294,6 +420,82 @@ ipcMain.handle('projects:setOpen', (_event, dir) => {
   saveConfig(cfg);
 });
 
+// ---- Workspace persistence (K15) ----
+// What panels were open, which view mode was active, and where each panel sat on the
+// canvas. Stored in the same config file as everything else; the renderer saves a
+// debounced snapshot on every structural change and a final one on window close.
+ipcMain.handle('workspace:get', () => loadConfig().workspace || null);
+
+ipcMain.on('workspace:save', (_event, ws) => {
+  const cfg = loadConfig();
+  cfg.workspace = ws;
+  saveConfig(cfg);
+});
+
+// ---- Scrollback persistence (K16) ----
+// Panels get their terminal history back on restart so a restored panel doesn't come
+// up as a blank window. Plain text only (no ANSI colors): we deliberately avoid
+// @xterm/addon-serialize to keep the dependency list at zero-new-packages, and the
+// history is replayed dimmed anyway, so color fidelity buys nothing.
+// Keyed by the panel's stable `key` (a random id minted at panel creation and stored
+// in the workspace) rather than the runtime `id`, which is sequence-based and
+// therefore different on every launch.
+function scrollbackDir() {
+  const dir = path.join(app.getPath('userData'), 'scrollback');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* already there */ }
+  return dir;
+}
+
+// Keys come from the renderer, so they must never be able to escape the folder via
+// `../` or an absolute path — restrict to the charset our own key generator uses.
+function scrollbackFile(key) {
+  if (typeof key !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(key)) return null;
+  return path.join(scrollbackDir(), `${key}.log`);
+}
+
+// `on`, not `handle`: this is also called during the close flush, where waiting on an
+// async round-trip would race the window teardown.
+ipcMain.on('scrollback:save', (_event, { key, text }) => {
+  const file = scrollbackFile(key);
+  if (!file) return;
+  try {
+    if (text) fs.writeFileSync(file, text, 'utf8');
+    else fs.rmSync(file, { force: true });
+  } catch { /* disk full / permissions — history is a nicety, never fatal */ }
+});
+
+ipcMain.handle('scrollback:load', (_event, key) => {
+  const file = scrollbackFile(key);
+  if (!file) return null;
+  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+});
+
+ipcMain.on('scrollback:clear', (_event, key) => {
+  const file = scrollbackFile(key);
+  if (!file) return;
+  try { fs.rmSync(file, { force: true }); } catch { /* noop */ }
+});
+
+// ---- Attention notifications (K17) ----
+// Fired when a panel's agent looks like it's waiting on the user. Suppressed while the
+// window is focused — the glowing badge in the panel head is enough when you're
+// already looking at it; the OS toast is for when multicli is in the background.
+ipcMain.on('notify:attention', (_event, { title, body }) => {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFocused()) return;
+  try {
+    mainWindow.flashFrame(true);
+    if (Notification.isSupported()) {
+      const n = new Notification({ title, body });
+      n.on('click', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      });
+      n.show();
+    }
+  } catch { /* notifications are best-effort */ }
+});
+
 // ---- PTY lifecycle ----
 ipcMain.handle('pty:spawn', (_event, { id, cwd, cols, rows }) => {
   if (ptyProcesses.has(id)) {
@@ -306,11 +508,15 @@ ipcMain.handle('pty:spawn', (_event, { id, cwd, cols, rows }) => {
     ? cfg.defaultBaseDir
     : (process.env.USERPROFILE || process.cwd());
 
+  // Named, because the renderer needs the cwd we actually used (not the one it asked
+  // for) to look up this panel's session transcript — see quotas:getSession.
+  const resolvedCwd = cwd && fs.existsSync(cwd) ? cwd : fallbackCwd;
+
   const proc = pty.spawn(DEFAULT_SHELL, [], {
     name: 'xterm-color',
     cols: cols || 80,
     rows: rows || 24,
-    cwd: cwd && fs.existsSync(cwd) ? cwd : fallbackCwd,
+    cwd: resolvedCwd,
     env: process.env,
   });
 
@@ -326,7 +532,7 @@ ipcMain.handle('pty:spawn', (_event, { id, cwd, cols, rows }) => {
   });
 
   ptyProcesses.set(id, proc);
-  return true;
+  return resolvedCwd;
 });
 
 ipcMain.on('pty:write', (_event, { id, data }) => {

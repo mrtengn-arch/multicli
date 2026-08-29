@@ -32,7 +32,16 @@
       <div class="menu">
         <button class="menu-btn" id="menu-view-btn">View</button>
         <div class="menu-dropdown">
+          <div class="menu-label" id="layout-label">Layout</div>
+          <div class="menu-item view-mode-item" data-action="view-mode" data-mode="grid" id="view-grid-item"><span class="check"></span><span class="name">Grid</span></div>
+          <div class="menu-item view-mode-item" data-action="view-mode" data-mode="canvas" id="view-canvas-item"><span class="check"></span><span class="name">Canvas</span></div>
+          <div class="menu-item view-mode-item" data-action="view-mode" data-mode="board" id="view-board-item"><span class="check"></span><span class="name">Board</span></div>
+          <div class="menu-item" data-action="reset-canvas" id="reset-canvas-item">Reset Canvas View</div>
+          <div class="menu-sep"></div>
+          <div class="menu-item" data-action="toggle-restore" id="toggle-restore-item"><span class="check"></span><span class="name">Restore Session on Start</span></div>
+          <div class="menu-sep"></div>
           <div class="menu-item" data-action="toggle-dock" id="toggle-dock-item">Show/Hide Limit Panel</div>
+          <div class="menu-item" data-action="toggle-shortcut-bar" id="toggle-shortcut-bar-item"><span class="check"></span><span class="name">Shortcut Bar</span></div>
           <div class="menu-sep"></div>
           <div class="menu-label" id="panel-colors-label">Panel Colors (per agent)</div>
           <div id="agent-color-list"></div>

@@ -112,11 +112,20 @@ The app should behave like Claude Code's `--continue`/`--resume`, **remembering 
 sessions**: when the window is reopened (or a project is selected), each panel's last
 session should be automatically remembered/resumable.
 
-⚠️ **Open question:** This behavior varies from CLI to CLI — Claude Code has native
-resume support, but gemini/qwen/codex CLIs may have different (or no) session/resume
-mechanisms of their own. Each agent needs to be researched individually and its resume
-command/flag added to `agents.json`. **To be settled before moving to the v2 coding
-phase.**
+✅ **Settled and implemented (K12 on 27 Aug, K16 on 29 Aug).** Per-agent resume flags live
+in `agents.json` (`continueCommand`/`resumeCommand`); Claude (`-c`/`-r`) and Codex
+(`resume --last`/`resume`) have them, gemini/qwen/opencode still have no known flag and
+just start fresh.
+
+On top of that, K16 restores the **workspace** itself: which panels were open, their
+folders, canvas geometry and view mode are persisted, and on launch each panel is
+respawned and relaunched with its continue flag, with its previous terminal output
+replayed as dimmed history above the live session. That last part is what makes a
+restored gemini/qwen panel still feel continuous despite having no resume flag of its own.
+
+⚠️ This is **not** true process persistence — the PTYs die with the app (nodeterm gets
+that from `tmux`, which has no Windows equivalent; see K16). The agent CLI reconstructs
+its own conversation from its own session store, we only rebuild the window around it.
 
 ### 3.4 Feasibility Assessment (26 Aug 2026)
 
@@ -176,6 +185,12 @@ mini indicators and the right-side dock cards. No network requests are made at a
   been investigated.
 - **Packaging order is settled**: the small details above, then electron-builder/NSIS
   (K9).
+- **Added 29 Aug 2026 (K15-K18), pending an interactive check at the keyboard:** canvas
+  drag/zoom feel, the board re-flowing live, a full workspace restore across a restart,
+  and what a restored `claude -c` panel does when there's no prior session to continue.
+- Possible follow-ups from the nodeterm review that were *not* taken: git staging/commit
+  UI in-panel, GitHub Issues on the board, remote access (mobile/browser). None of these
+  were asked for; noted only so the comparison isn't lost.
 
 ---
 
@@ -197,6 +212,13 @@ mini indicators and the right-side dock cards. No network requests are made at a
 | K12 | Agents menu offers **New / Continue Last / Choose Session…** for agents with a known resume flag (currently Claude: `-c`/`-r`, Codex: `resume --last`/`resume`); agents without one (Gemini, Qwen) just start new | Rather than guessing a common resume UX across all four CLIs, `agents.json` gained per-agent `continueCommand`/`resumeCommand` fields; the Agents-menu click only shows the extra picker (`showSessionModePicker`) when an agent actually has one |
 | K13 | Agent list extended with a 5th entry: **Open Code** (`opencode`) | User request; no known resume flag or local quota source yet, so it behaves like Gemini/Qwen (plain start, dock shows "no local data") until one is found |
 | K14 | Copy/Paste/Select-All are both keyboard shortcuts *and* buttons in a thin bar at the very bottom of the window | User pushed back twice: first wanted the shortcuts to exist at all (`Ctrl+C`/`Ctrl+V`/`Ctrl+Shift+A`, `Ctrl+C` only copies when there's a selection so `^C`-as-interrupt still works), then wanted them as clickable buttons too, not just a text hint — the actions were refactored into shared functions (`copyPanelSelection`/`pasteIntoPanel`/`selectAllInPanel`) so both paths call the same code. Buttons default to a turquoise glowing border (`--turquoise` CSS var, same hex as the Gemini panel glow) |
+| K15 | **Grid is not replaced — `viewMode` adds `canvas` and `board` alongside it** (`grid` stays the default), and every render path re-parents the *existing* panel DOM nodes | Prompted by looking at [nodeterm](https://github.com/eneskirca/nodeterm) (29 Aug 2026). Rewriting the split-pane grid into a canvas engine would have been a much bigger change with no fallback if the canvas turned out to be awkward; three sibling render functions behind one `renderView()` dispatcher cost far less and leave the proven layout intact. Because a panel's DOM node is moved rather than recreated, live sessions/scrollback survive switching modes — the same property `rebuildGridLayout()` already relied on |
+| K16 | **Session persistence is "workspace restore", not a detached PTY daemon**: panel list + folders + canvas geometry are saved, and on restart each panel is relaunched with its agent's *continue* flag (`claude -c`, `codex resume --last`) plus its previous terminal output replayed as dimmed history | nodeterm gets true persistence from `tmux`, which has no Windows equivalent; real detached PTYs would mean shipping a separate always-running daemon process. Reusing K12's per-agent resume flags gets the outcome the user actually asked for ("kalıcılık") at a fraction of the cost, and the dimmed scrollback replay makes a restored panel look continuous even for agents with no resume flag (gemini/qwen/opencode) |
+| K17 | **Agent status (running / needs-you / idle / exited) is inferred from the pty stream**, not from Claude Code's hook system | Hooks would mean writing into the user's global `~/.claude/settings.json` (invasive, and outside this app's own config) and would only ever work for 1 of the 5 agents. A settle-timer plus a deliberately conservative "does the tail look like a question" regex set covers every CLI for free. Tuned to avoid false positives specifically (a bare `>`/`$` shell prompt and Claude's idle input box must NOT match) since a wrong "needs you" fires an OS notification — 15 regression cases are checked in `test/attention.test.js` (`npm test`) |
+| K18 | Board columns are **agent status**, not user-assigned buckets — so there is nothing to drag | A hand-sorted kanban would be a second state to maintain by hand; status columns fill themselves and give the actual value wanted from the board — "which of my 6 agents is stuck waiting on me right now" |
+| K19 | A panel **claims a specific session transcript** shortly after it starts (`session:claim`) — newest file in its cwd's session dir, touched since spawn, not already claimed by a sibling panel. That claimed id drives both the token badge in the panel head and which conversation a restore resumes | There is no handle tying a spawned CLI process to the file it writes, but both Claude and Gemini shard session files by cwd, which the panel knows — cwd narrows it to a folder, and the "newest unclaimed since spawn" rule picks the right file within it. Claiming is retried (3s/8s/20s, then on every token refresh) because the transcript often doesn't exist until the first exchange. Only claude/gemini have a readable local source (same constraint as §3.5); other agents render nothing rather than a `0` that would read as a real measurement |
+| K20 | Restore resumes **the panel's own session** (`claude -r <id>`, via `resumeCommand` + claimed id), falling back to `-c` only when no id was captured | Found the hard way on the first restore after K16 shipped (29 Aug 2026, Murat): `claude -c` means "continue the folder's most recent conversation", so restoring three Claude panels rooted in the same folder silently collapsed all three into one session. K19's per-panel session id is what makes the distinction possible |
+| K21 | The bottom shortcut bar (Copy/Paste/Select All, K14) becomes **toggleable, default on** rather than deleted | Murat found it redundant in practice — PowerShell's own right-click already does copy/paste (29 Aug 2026). Deleting it would throw away working code and the keyboard-hint text it carries; a View-menu toggle keeps it for anyone who wants the buttons and costs one line of state. This supersedes K14's "buttons are always visible", not the shared-function refactor underneath it |
 
 ---
 
@@ -391,3 +413,115 @@ mini indicators and the right-side dock cards. No network requests are made at a
   (`node --check`) and reasoned through carefully, but need a real restart + interactive
   check next session before calling them verified. Also revisit the still-stale top-of-file
   comment in `main.js` ("Session resume is future work") — that shipped 27 Aug (K12).
+
+### 2026-08-29
+- **Triggered by a competitor review.** The user asked whether
+  [nodeterm](https://github.com/eneskirca/nodeterm) (a node-based terminal manager for AI
+  agents) was worth installing. Verdict: **no** — it's macOS/Linux only (no Windows build;
+  session persistence is `tmux`-backed), BUSL-1.1 licensed, and would need our whole
+  agent/quota wiring redone. Three of its ideas were worth taking, and the user asked for
+  all three in one pass, cheapest first.
+- **Live agent status (K17)** — every panel head now carries a status dot:
+  `running` (blue, pulsing) / `needs you` (amber, glowing, plus a `.needs-you` glow on the
+  whole panel) / `idle` / `exited` (red). Driven from the pty stream in `notePanelOutput()`:
+  output flips the panel to *running* and arms a 900 ms settle timer; when the stream goes
+  quiet, `looksLikeAttention()` checks the last 8 buffer rows against `ATTENTION_PATTERNS`
+  to decide *needs you* vs *idle*. Typing clears *needs you* immediately. When multicli is
+  **not focused**, entering *needs you* fires an OS notification + taskbar flash
+  (`notify:attention`, suppressed while focused — the badge is enough if you're looking).
+  The patterns are deliberately conservative; a bare `>`/`$` shell prompt and Claude's idle
+  input box must not match, since a false positive means a spurious toast. 15 regression
+  cases live in `test/attention.test.js` (`npm test`; evals the real regexes out of `renderer.js`) —
+  all passing.
+- **Workspace + scrollback persistence (K16)** — the "kalıcılık" ask. `workspace:*` and
+  `scrollback:*` IPC added. The renderer saves a debounced snapshot (panel list, per-panel
+  folder + stable `key` + canvas geometry, view mode, canvas pan/zoom) on every structural
+  change, and `main.js` holds the window close open (max 1.5 s) for one final flush that
+  also dumps each terminal's last 400 lines to `%APPDATA%/…/scrollback/<key>.log`. On the
+  next launch each panel is respawned in its old folder, its history replayed **dimmed**
+  above the live output, and the agent relaunched with its continue flag from K12
+  (`claude -c`, `codex resume --last`). Toggleable via View → "Restore Session on Start".
+  Explicitly closing a panel deletes its saved history. **Not** true PTY persistence: a
+  hard kill (rather than a window close) loses the final scrollback flush, though the
+  debounced panel list survives.
+- **Canvas + Board views (K15/K18)** — View → Layout, or Ctrl+Shift+1/2/3.
+  *Canvas*: infinite pan/zoom surface, panels are free-positioned nodes (drag by header,
+  resize by the corner grip, wheel-zoom about the cursor, left-drag empty space or
+  middle-drag anywhere to pan, dot grid tracks the transform). Below 0.85 zoom the terminal
+  bodies go `pointer-events: none` — xterm's mouse math doesn't survive a CSS scale, so
+  panels become read-only map tiles at that point rather than pretending to be typable.
+  *Board*: kanban-ish triage columns by status (Needs You / Running / Idle / Exited) with
+  the terminals still live inside the cards; it re-flows itself (debounced 250 ms) as
+  statuses change.
+- **Grid untouched (K15).** `renderView()` dispatches to `renderGrid` / `renderCanvas` /
+  `renderBoard` / `renderMaximized`, all re-parenting the *same* panel DOM nodes, so
+  sessions survive a mode switch. `rebuildGridLayout()` was renamed `renderGrid()` and its
+  now-dead empty-state branch moved up into `renderView()`. Maximize stopped being a CSS
+  overlay (`position:absolute` can't escape the canvas's transformed world) and became a
+  render mode of its own.
+- **Verified:** `node --check` on all three JS files; a real Electron boot with
+  `ELECTRON_ENABLE_LOGGING=1` produces no renderer console errors (confirmed the harness
+  actually reports errors by first injecting a canary); 15/15 attention-detection cases.
+  The "Renderer process crashed" line in those runs is an artifact of `timeout` SIGTERM-ing
+  the app — the pre-change `HEAD` build prints it identically.
+- **NOT yet verified interactively** (needs a real session at the keyboard): restoring a
+  workspace across a restart, dragging/zooming on the canvas, the board re-flowing live,
+  and whether `claude -c` in a restored panel behaves acceptably when that panel has no
+  prior session to continue (it will print the CLI's own error and drop to a shell).
+
+#### Same day, second pass — five things the user hit while actually using it
+- **Board cards hopped between columns.** Claude Code's TUI repaints itself while idle, so
+  the status kept flapping running → idle → running and the card followed. Added per-panel
+  hysteresis (`scheduleBoardMove`, `BOARD_STICKY_MS = 4000`): a card only changes column
+  once its new status has held for 4 s. `attention` still moves instantly — that's the one
+  transition you don't want damped. `renderBoard()` now groups by the debounced
+  `p.boardStatus`, not the live `p.status`.
+- **Canvas panels couldn't be resized.** One 14 px corner grip, and because the whole world
+  is CSS-scaled it shrank to 7 physical px at 50 % zoom. Now three grips (right edge, bottom
+  edge, 22 px corner) driven by an axis-aware `startCanvasResize(e, id, axis)`, sized off a
+  `--inv-z` custom property set in `applyCanvasTransform()` so they stay a constant on-screen
+  size at any zoom. Edge grips overhang slightly and light up on hover.
+- **`claude -r` panels still read "Projesiz".** `feedTitleCandidate()` only watches typed
+  lines and bails on escape sequences, but `-r`'s session picker is an arrow-key TUI. Hooked
+  xterm's `onTitleChange` (OSC 0/2) → `applyTerminalTitle()` instead, which is authoritative;
+  it ignores bare paths so a shell that sets its title to the cwd doesn't win.
+- **Per-session token count in the panel head (K19)**, just left of the color dot, with the
+  exact figure on hover. Needed a way to tie a panel to one transcript file: `session:claim`
+  returns the newest `.jsonl` in the panel's cwd session dir that was touched since the panel
+  spawned and isn't already held by a sibling. Verified against real transcripts — three
+  simulated panels on `C:\Users\murat` claimed three distinct sessions with distinct totals.
+  `pty:spawn` now returns the cwd it actually used (may differ from the requested one), since
+  that resolved path is what the lookup keys off.
+- **Restored Claude panels all landed in the same conversation (K20).** Reported by the user
+  after the first real restore: `claude -c` resumes *the folder's* latest session, so three
+  panels rooted in one folder collapsed into one. Restore now builds `claude -r <claimed id>`
+  per panel and only falls back to `-c` when no id was captured. The session id is persisted
+  in the workspace record. Note the workspace saved *before* this change has no ids in it, so
+  the first restore after upgrading still uses `-c` — the panels have to be opened by hand
+  once, after which each claims its own id. `session:claim` also takes the id the panel
+  already holds: if that file has been written to since the panel spawned it stays put, and
+  if it hasn't (i.e. `-r` forked a new transcript) the panel adopts the new one. Re-claiming
+  is confined to the 3 s/8 s/20 s window after spawn, so an idle panel can never adopt an
+  unrelated session someone started in the same folder later.
+- **Shortcut bar is now optional (K21)** — the user pointed out PowerShell's right-click
+  already covers copy/paste. Kept behind View → "Shortcut Bar" (default on) rather than
+  deleted; toggling it refits every terminal, since the panels gain/lose ~34 px.
+- **Verified:** `node --check` ×3, 15/15 attention cases, a clean `ELECTRON_ENABLE_LOGGING=1`
+  boot, and throwaway harnesses that ran the real `session:claim` / `quotas:getSession` bodies
+  against live transcripts: three simulated same-folder panels claimed three distinct sessions
+  with distinct totals; `null` for a bogus id, an unsupported agent and a not-yet-written
+  session; and 5/5 on the held-id branch (keep a live file, adopt after a fork, keep a known
+  id when nothing newer exists, skip a sibling's file).
+- **Keyboard died in zoomed-out canvas panels.** Self-inflicted: the panel's mousedown
+  handler refused to call `term.focus()` below `CANVAS_INTERACTIVE_Z`, on the reasoning that
+  a "map tile" shouldn't swallow keystrokes. Wrong reasoning — CSS scale breaks xterm's
+  *mouse* math, not its keyboard, and the output is perfectly visible while scaled. Focus is
+  now unconditional; `.zoomed-out` still takes pointer events off the body (so a selection
+  drag can't land on the wrong cells), and the click falls through to the panel element,
+  which focuses the terminal. Zoomed-out panels are typable again.
+- **Token pill restyled** — dim grey text was too easy to miss, so it's now a lit pill
+  colored off the panel's own `--glow`/`--glow-dim` vars. That means it inherits the agent's
+  color for free (orange on Claude, turquoise on Gemini) and stays consistent with the
+  existing per-agent color language rather than introducing a new accent.
+- **Still NOT verified interactively:** the actual restore-with-`-r` round trip, and whether
+  a panel reliably claims its session within the 3 s / 8 s / 20 s retry window.

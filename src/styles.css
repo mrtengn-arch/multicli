@@ -112,6 +112,20 @@ body {
   color: var(--text-dim);
 }
 
+/* Checkable menu rows (view mode, restore-on-start) — same two-column shape as
+   .project-row so the labels line up down the whole View menu. */
+.menu-item.view-mode-item,
+#toggle-restore-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.menu-item .check {
+  width: 14px;
+  flex: 0 0 14px;
+  color: var(--glow);
+}
+
 .color-row {
   display: flex;
   align-items: center;
@@ -258,11 +272,18 @@ body {
     inset 0 0 12px rgba(57, 255, 136, 0.08);
 }
 
-.agent-panel.maximized {
-  position: absolute;
-  inset: 6px;
+/* Maximize is no longer a CSS overlay on top of the grid: `position:absolute` breaks
+   down in canvas mode, where every panel lives inside a CSS-transformed world (a
+   transformed ancestor becomes the containing block even for `position:fixed`). Instead
+   renderView() puts the single maximized panel into a `.view-max` host on its own —
+   works identically in all three view modes. */
+#panel-grid.view-max {
+  display: flex;
+  padding: 6px;
+}
+#panel-grid.view-max .agent-panel {
+  flex: 1 1 auto;
   margin: 0;
-  z-index: 30;
 }
 
 .agent-panel-head {
@@ -283,6 +304,30 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* This panel's own token total (K19), as a lit pill rather than dim text — it's a number
+   you glance at across a screen full of panels, so it has to carry. Colored off `--glow`,
+   the panel's own agent color, so a Claude panel's count reads orange and a Gemini one
+   turquoise without any extra wiring. `flex: 0 0 auto` keeps it from squeezing the title. */
+.agent-panel-head .token-badge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+  color: var(--glow);
+  background: var(--glow-dim);
+  border: 1px solid var(--glow);
+  box-shadow: 0 0 6px var(--glow-dim);
+  cursor: default;
+  transition: box-shadow 0.15s ease;
+}
+.agent-panel-head .token-badge:hover { box-shadow: 0 0 10px 1px var(--glow-dim); }
+/* Nothing to report yet (no transcript, or an agent with no readable local source) —
+   an empty pill would read as "zero", which isn't what we know. */
+.agent-panel-head .token-badge:empty { display: none; }
+
 .agent-panel-head .color-btn {
   width: 10px;
   height: 10px;
@@ -292,6 +337,38 @@ body {
   border: 1px solid rgba(255,255,255,0.35);
 }
 .agent-panel-head .color-btn:hover { transform: scale(1.25); }
+
+/* Live agent status dot (K17) — idle / running / attention / exited.
+   `running` pulses, `attention` gets a hard amber glow so it's findable across a
+   screen full of panels; that's the whole point of the Board view's first column. */
+.agent-panel-head .status-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+  background: #4a4f5c;
+}
+.agent-panel-head .status-badge[data-status="running"] {
+  background: #3ba7ff;
+  animation: status-pulse 1.1s ease-in-out infinite;
+}
+.agent-panel-head .status-badge[data-status="attention"] {
+  background: #ffb020;
+  box-shadow: 0 0 6px 1px rgba(255, 176, 32, 0.85);
+}
+.agent-panel-head .status-badge[data-status="exited"] { background: var(--danger); }
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Whole-panel emphasis when an agent is waiting on the user — survives being scaled
+   down on the canvas, where an 8px dot is basically invisible. */
+.agent-panel.needs-you {
+  border-color: #ffb020;
+  box-shadow: 0 0 8px rgba(255, 176, 32, 0.45), 0 0 20px rgba(255, 176, 32, 0.25);
+}
 
 .agent-panel-head .folder-btn,
 .agent-panel-head .close-btn {
@@ -332,6 +409,169 @@ body {
    fixes that. */
 .resizer-row { height: 5px; cursor: row-resize; }
 
+/* ---------------- Canvas view (K15) ---------------- */
+/* An infinite pan/zoom surface: #canvas-world is one big transformed layer and every
+   panel is absolutely positioned inside it, so panning/zooming is a single composited
+   transform instead of N layout passes. */
+
+#panel-grid.view-canvas {
+  display: block;
+  overflow: hidden;
+  background-color: var(--bg);
+  /* Dot grid gives the pan/zoom some visual anchoring; the position is driven from JS
+     so the dots travel with the content. */
+  background-image: radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px);
+  background-size: 28px 28px;
+  cursor: grab;
+}
+#panel-grid.view-canvas.panning { cursor: grabbing; }
+
+#canvas-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+}
+
+#canvas-world .agent-panel {
+  position: absolute;
+  margin: 0;
+}
+
+/* Below ~0.85 zoom xterm's own mouse math no longer lines up with the scaled pixels, so
+   the body stops taking mouse events — dragging a selection there would highlight the
+   wrong cells. Only the *mouse* is withheld: the click falls through to the panel's own
+   mousedown handler, which focuses the terminal, so a zoomed-out panel is still typable.
+   The head stays interactive so drag/close/color keep working. */
+#canvas-world.zoomed-out .agent-panel-body { pointer-events: none; opacity: 0.85; }
+
+.canvas-drag-handle { cursor: move; }
+
+/* Three grips, not one: a single corner square is a tiny target, and it got smaller
+   still as you zoomed out. --inv-z (set in applyCanvasTransform) cancels the world's
+   scale so every grip keeps the same on-screen size at any zoom level. The edge grips
+   overhang the panel a little so the band is grabbable from just outside it too. */
+.resize-grip {
+  position: absolute;
+  display: none;
+  z-index: 6;
+  --grip: calc(10px * var(--inv-z, 1));
+  --grip-corner: calc(22px * var(--inv-z, 1));
+}
+#panel-grid.view-canvas .resize-grip { display: block; }
+
+.resize-grip-e {
+  top: 0;
+  right: calc(var(--grip) / -2);
+  width: var(--grip);
+  height: 100%;
+  cursor: ew-resize;
+}
+.resize-grip-s {
+  left: 0;
+  bottom: calc(var(--grip) / -2);
+  width: 100%;
+  height: var(--grip);
+  cursor: ns-resize;
+}
+/* Last in the DOM, so it wins the overlap with the two edge grips at the corner. */
+.resize-grip-se {
+  right: calc(var(--grip) / -2);
+  bottom: calc(var(--grip) / -2);
+  width: var(--grip-corner);
+  height: var(--grip-corner);
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 55%, var(--border) 55%, var(--border) 100%);
+}
+/* Only the corner is drawn by default; the edges reveal themselves on approach so the
+   panel doesn't grow a permanent border. */
+.resize-grip-e:hover,
+.resize-grip-s:hover { background: var(--accent); opacity: 0.5; }
+.resize-grip-se:hover { background: linear-gradient(135deg, transparent 40%, var(--accent) 40%, var(--accent) 100%); }
+
+#canvas-zoom-label {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(0,0,0,0.45);
+  border: 1px solid var(--border);
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* ---------------- Board view (K18) ---------------- */
+/* Kanban-ish triage board. Columns are agent STATUS, not user-assigned buckets, so
+   there is nothing to drag — panels move themselves into "Needs You" the moment their
+   agent asks a question. Terminals stay live inside the cards. */
+
+#panel-grid.view-board {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 8px;
+  overflow-x: auto;
+}
+
+.board-column {
+  flex: 1 1 0;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.board-column-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+}
+.board-column-head .dot { width: 7px; height: 7px; border-radius: 50%; background: #4a4f5c; }
+.board-column-head .count { margin-left: auto; opacity: 0.7; }
+.board-column[data-status="attention"] .board-column-head { color: #ffb020; }
+.board-column[data-status="attention"] .board-column-head .dot { background: #ffb020; }
+.board-column[data-status="running"] .board-column-head .dot { background: #3ba7ff; }
+.board-column[data-status="exited"] .board-column-head .dot { background: var(--danger); }
+
+.board-column-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.board-column-body .agent-panel {
+  flex: 0 0 auto;
+  height: 230px;
+  margin: 0;
+}
+
+.board-empty {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-align: center;
+  padding: 14px 0;
+  opacity: 0.6;
+}
+
 /* ---------------- Right limit dock ---------------- */
 
 #limit-dock {
@@ -343,6 +583,7 @@ body {
   overflow-y: auto;
 }
 #limit-dock.hidden { display: none; }
+#shortcut-bar.hidden { display: none; }
 
 #limit-dock h3 {
   margin: 0 0 4px;

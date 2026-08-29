@@ -36,6 +36,33 @@ contextBridge.exposeInMainWorld('multicli', {
   },
   quotas: {
     get: () => ipcRenderer.invoke('quotas:get'),
+    // Per-panel total for the panel's own session transcript.
+    getSession: (agentId, cwd, sessionId) =>
+      ipcRenderer.invoke('quotas:getSession', { agentId, cwd, sessionId }),
+  },
+  session: {
+    // Find the transcript file this panel just started writing. `taken` lists the ids
+    // sibling panels already hold, so two panels on one folder don't claim the same one.
+    claim: (agentId, cwd, sinceMs, taken, current) =>
+      ipcRenderer.invoke('session:claim', { agentId, cwd, sinceMs, taken, current }),
+  },
+  // Workspace = which panels were open + view mode + canvas geometry (K15).
+  // `save` is fire-and-forget on purpose: it's called from the window-close flush,
+  // where an async round-trip would race the teardown.
+  workspace: {
+    get: () => ipcRenderer.invoke('workspace:get'),
+    save: (ws) => ipcRenderer.send('workspace:save', ws),
+    onFlush: (cb) => ipcRenderer.on('workspace:flush', () => cb()),
+    flushed: () => ipcRenderer.send('workspace:flushed'),
+  },
+  // Terminal history for restored panels (K16).
+  scrollback: {
+    save: (key, text) => ipcRenderer.send('scrollback:save', { key, text }),
+    load: (key) => ipcRenderer.invoke('scrollback:load', key),
+    clear: (key) => ipcRenderer.send('scrollback:clear', key),
+  },
+  notify: {
+    attention: (title, body) => ipcRenderer.send('notify:attention', { title, body }),
   },
   pty: {
     spawn: (id, cwd, cols, rows) => ipcRenderer.invoke('pty:spawn', { id, cwd, cols, rows }),

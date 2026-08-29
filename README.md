@@ -5,6 +5,11 @@ side by side as real terminal panels in a single window.
 
 ![multicli screenshot](.github/screenshot.png)
 
+Canvas view — panels as free-positioned nodes on a pan/zoom surface, each showing its
+own live session title and that session's token count:
+
+![multicli canvas view](.github/screenshot-canvas.png)
+
 ## Features
 
 - **Directly typable panel grid** — each panel is a real `node-pty` + `xterm.js`
@@ -12,6 +17,17 @@ side by side as real terminal panels in a single window.
   PageUp/PageDown/Ctrl+Home/Ctrl+End scroll through history.
 - **2D grid, resizable both horizontally and vertically**, double-click to
   maximize/restore a panel.
+- **Three layouts** (View → Layout, or Ctrl+Shift+1/2/3) sharing the same live panels:
+  the **grid**, an infinite **canvas** you can pan and zoom with panels as
+  free-positioned nodes, and a **board** that sorts panels into columns by status.
+- **Live agent status** — a dot on every panel head reads *running* / *needs you* /
+  *idle* / *exited*, inferred from the terminal stream itself (no agent-side setup).
+  When the window isn't focused, an agent asking a question raises an OS notification.
+- **Session restore** — the panel list, folders and canvas layout are saved, and on the
+  next launch each panel is reopened on *its own* previous conversation (`claude -r <id>`),
+  with the old scrollback replayed dimmed above the live output.
+- **Per-session token count** in each panel head, read from that panel's own transcript —
+  so several panels on the same folder still report separately.
 - **Per-panel project folder** — each window can have its own working directory; save
   multiple projects from the File menu and switch between them quickly.
 - **Per-agent color** — Claude orange, Gemini turquoise, Qwen purple, Codex green by
