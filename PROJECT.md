@@ -763,3 +763,64 @@ two of them blockers, all three fixed and pinned with regression tests.
   pinning it to `0.0.0.0` leaves `::` free and the clash never happens, which is exactly
   how the new checks first failed.
 - Full `npm test` green: attention, session-attribution, and all remote-access checks.
+- **Verified in a real browser this time**, which is the whole point of the second bullet:
+  opened the remote page in Chrome against a standalone Node harness (`remote.js` with stub
+  handlers, no Electron, so the running app was untouched) — `document.styleSheets.length`
+  2, `typeof window.multicli` object, `__MULTICLI_REMOTE__` true, xterm loaded, a live WS
+  round trip through `agents.list()` and `settings.getDefaultBaseDir()`, clean console.
+- **Pushed** (`c8bebdb`, then `4d3122b` for the README screenshot). The GitHub repo has
+  been renamed `multicli` → `MultiCli`; `origin` updated to match. Description now mentions
+  remote access and the `remote-access`/`tailscale` topics were added — note GitHub caps a
+  repo at **20 topics** and we're now at the cap, so anything further has to displace an
+  existing one.
+- One caveat on the first "the remote page looked terrible and nothing worked" report:
+  that was not a design problem at all. The desktop app had been started at 09:00 and
+  `remote.js` is `require`d once at main-process startup, so it was still serving the
+  pre-fix code that 401s subresources — bare unstyled HTML with no JS. Restarting the app
+  fixed it. Worth remembering before debugging anything else in this file: **a change to
+  `remote.js` needs an app restart, not just a reload.**
+
+#### Session claiming is still broken for already-saved ids (open, not yet fixed)
+
+Found while Murat was testing the remote view: panel 1 was showing *this* Claude
+conversation — the one running in an ordinary PowerShell window, outside multicli.
+
+The saved workspace held three session ids whose transcripts were created 26–28 Aug,
+while the panels claiming them spawned on 31 Aug at 09:00. So none of them could have been
+a legitimate claim. Two separate causes:
+
+1. **The generator:** `defaultBaseDir` is `C:\Users\murat`. With no project open, every
+   panel runs its agent in the home directory — the same `~/.claude/projects/C--Users-murat/`
+   that Murat's own PowerShell Claude sessions write to (21 transcripts had piled up in
+   there). Panels and foreign sessions meet in one folder.
+2. **What makes it permanent:** those ids were claimed under the *old* mtime rule and
+   written to the workspace. K19's birthtime fix only governs *new* claims; `sessionClaim`'s
+   final `return current || null` never drops an id it already holds, and `restoreOnStart`
+   re-runs `claude -r <that id>` on every launch. So a panel resumes someone else's live
+   conversation forever. The 29 Aug note said Murat should clear the config by hand — that
+   was the wrong call, since it left the failure mode intact.
+
+Also surfaced: there is currently **no way to deliberately bind a panel to an existing
+session**. "Choose Session…" runs bare `claude -r`, which opens the *CLI's* own picker, so
+multicli never learns which session was chosen, and the strict birthtime rule then refuses
+to claim it — no id, no token badge, nothing saved.
+
+Agreed direction (not yet implemented):
+
+- Store `claimedAt` next to `sessionId` in the workspace and re-check the birthtime rule at
+  restore; records without it (i.e. all existing ones) are untrusted and dropped once, so
+  bad state heals itself instead of needing a manual config edit.
+- Verify the transcript actually lives in the panel's cwd folder before `claude -r`.
+- Give multicli its own session picker (`sessions:list` + a preview of each transcript), so
+  a user-chosen session is recorded as an *explicit* claim that bypasses the heuristic. The
+  birthtime rule should only ever guard *automatic* claims.
+- Separately, `defaultBaseDir` should not be the home directory. Panels opened with a real
+  project folder each get their own transcript pool and the collision cannot arise.
+
+Worth recording about the transcript format, since it decides whether sessions can be
+moved between project folders: Claude locates a session **by which folder the `.jsonl` sits
+in**, not by the `cwd` field inside it. That field is per-message and a single session
+routinely spans several directories (one here had five, because the user `cd`s during the
+session). So moving a transcript into another project's folder is a plain file move and
+`claude -r` keeps working; only `~/.claude/history.jsonl`'s `project` field goes stale, and
+that only affects prompt-history recall, not resuming.
