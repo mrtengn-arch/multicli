@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld('multicli', {
     // sibling panels already hold, so two panels on one folder don't claim the same one.
     claim: (agentId, cwd, sinceMs, taken, current) =>
       ipcRenderer.invoke('session:claim', { agentId, cwd, sinceMs, taken, current }),
+    // Re-check a saved id before resuming into it. Returns the id, or null to start clean.
+    verify: (agentId, cwd, sessionId, since) =>
+      ipcRenderer.invoke('session:verify', { agentId, cwd, sessionId, since }),
   },
   // Workspace = which panels were open + view mode + canvas geometry (K15).
   // `save` is fire-and-forget on purpose: it's called from the window-close flush,

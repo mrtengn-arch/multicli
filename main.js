@@ -248,6 +248,17 @@ function claudeProjectDirFor(cwd) {
   return path.join(os.homedir(), '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
 }
 
+// Where a panel asking for `cwd` will actually land. Shared by pty:spawn and
+// session:verify so the "which folder holds my transcript" answer can be computed
+// before the pty exists, which is exactly when a restore needs it.
+function resolveCwd(cwd) {
+  const cfg = loadConfig();
+  const fallback = (cfg.defaultBaseDir && fs.existsSync(cfg.defaultBaseDir))
+    ? cfg.defaultBaseDir
+    : (process.env.USERPROFILE || process.cwd());
+  return cwd && fs.existsSync(cwd) ? cwd : fallback;
+}
+
 function sessionDirFor(agentId, cwd) {
   if (agentId === 'claude') return claudeProjectDirFor(cwd);
   if (agentId === 'gemini') {
@@ -314,6 +325,37 @@ function sessionClaim(_event, { agentId, cwd, sinceMs, taken, current }) {
   return current || null; // nothing better on offer — don't drop a known id
 }
 ipcMain.handle('session:claim', sessionClaim);
+
+// Is a saved id still safe to hand to `claude -r` on the next launch? sessionClaim's rule
+// is strict but it only ever runs *forward*: once an id is on a panel it is never dropped
+// (see the line above, which is deliberate — a transient empty directory listing must not
+// cost a panel its session). So a bad id, once saved, survives every restart. That is how
+// panels ended up resuming into Murat's own PowerShell conversation for two days: those
+// ids were claimed under the first, mtime-based rule, and no later run ever re-questioned
+// them (31 Aug 2026).
+//
+// This is the missing backward check, run once per panel at restore. It re-asserts the
+// claim rule against the file on disk instead of trusting the record:
+//   - `since` is the panel-start time the claim was made against. A record without one was
+//     written by a build that predates this check, so its provenance is unknown — dropped.
+//   - the transcript must still live in this panel's folder. Moving a session to another
+//     project is a plain file move (that's how Claude addresses them), so ids can go stale
+//     without anything being deleted.
+//   - the transcript must have been *created* at or after the run that claimed it. This is
+//     what a hijacked id fails: a foreign session's file predates the panel entirely.
+// Returns the id if it survives, null to start clean. Never throws — an unreadable
+// directory means "can't vouch for it", which is the same answer as "no".
+function sessionVerify(_event, { agentId, cwd, sessionId, since }) {
+  if (!sessionId) return null;
+  if (!since) return null;
+  const dir = sessionDirFor(agentId, resolveCwd(cwd));
+  if (!dir) return null;
+  let stat;
+  try { stat = fs.statSync(path.join(dir, `${sessionId}.jsonl`)); } catch { return null; }
+  // Same 1s jitter allowance as the claim itself, for the same reason.
+  return stat.birthtimeMs >= since - 1000 ? sessionId : null;
+}
+ipcMain.handle('session:verify', sessionVerify);
 
 // cutoff 0 = no time window; a session total covers the whole transcript.
 function readSessionUsage(agentId, file) {
@@ -599,14 +641,9 @@ function ptySpawn(_event, { id, cwd, cols, rows }) {
     ptyProcesses.delete(id);
   }
 
-  const cfg = loadConfig();
-  const fallbackCwd = (cfg.defaultBaseDir && fs.existsSync(cfg.defaultBaseDir))
-    ? cfg.defaultBaseDir
-    : (process.env.USERPROFILE || process.cwd());
-
-  // Named, because the renderer needs the cwd we actually used (not the one it asked
-  // for) to look up this panel's session transcript — see quotas:getSession.
-  const resolvedCwd = cwd && fs.existsSync(cwd) ? cwd : fallbackCwd;
+  // The renderer needs the cwd we actually used (not the one it asked for) to look up
+  // this panel's session transcript — see quotas:getSession.
+  const resolvedCwd = resolveCwd(cwd);
 
   const proc = pty.spawn(DEFAULT_SHELL, [], {
     name: 'xterm-color',
@@ -678,6 +715,7 @@ const remoteHandlers = {
   'settings:getAgentColors': settingsGetAgentColors,
   'settings:setAgentColor': settingsSetAgentColor,
   'session:claim': sessionClaim,
+  'session:verify': sessionVerify,
   'workspace:get': workspaceGet,
   'workspace:save': workspaceSave,
   'scrollback:save': scrollbackSave,

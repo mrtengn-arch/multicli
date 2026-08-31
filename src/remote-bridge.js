@@ -116,6 +116,8 @@
     session: {
       claim: (agentId, cwd, sinceMs, taken, current) =>
         call('session:claim', { agentId, cwd, sinceMs, taken, current }),
+      verify: (agentId, cwd, sessionId, since) =>
+        call('session:verify', { agentId, cwd, sessionId, since }),
     },
     workspace: {
       get: () => call('workspace:get'),

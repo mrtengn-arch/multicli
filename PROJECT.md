@@ -289,6 +289,7 @@ Tailscale/LAN-only).
 | K20 | Restore resumes **the panel's own session** (`claude -r <id>`). `-c` is used only when a panel is the *sole* restored panel for its (agent, folder) pair; otherwise the panel starts fresh | Found the hard way on the first restore after K16 shipped (29 Aug 2026, Murat): `claude -c` means "continue the folder's most recent conversation", so restoring three Claude panels rooted in the same folder silently collapsed all three into one. K19's session id fixes the normal case; the sibling count handles the leftover one, since firing `-c` from several panels at once can only ever be wrong. Starting fresh loses the thread, but landing in *someone else's* thread is worse, and the dimmed scrollback replay still shows what the panel was doing |
 | K21 | The bottom shortcut bar (Copy/Paste/Select All, K14) becomes **toggleable, default on** rather than deleted | Murat found it redundant in practice — PowerShell's own right-click already does copy/paste (29 Aug 2026). Deleting it would throw away working code and the keyboard-hint text it carries; a View-menu toggle keeps it for anyone who wants the buttons and costs one line of state. This supersedes K14's "buttons are always visible", not the shared-function refactor underneath it |
 | K22 | Remote access is **attach to the live desktop session**, not a second independent instance: a plain HTTP+WS server in the main process (View → Start Remote Access…) serves the same renderer.js/styles.css/xterm bundle to a browser, backed by a WebSocket bridge (`remote-bridge.js`) that mimics preload.js's exact `window.multicli` surface. No TLS (meant for a Tailscale tailnet or plain LAN, not the open internet); a random per-install token gates every request as defense-in-depth. A new main.js-side live-panel registry (`panelMeta`, populated by `panel:announce`/`panel:closed`) lets any newly-connecting viewer — a remote tab, or the host itself after a devtools reload — **attach** to already-running panels via `attachLivePanels()` instead of spawning duplicates; `restoreWorkspace()`'s disk-snapshot spawn path only runs on the host and skips anything already attached. Panel ids were also made collision-resistant (`mintPanelId()`) since two independent JS contexts (host window + remote tab) used to both start counting from 0 | Murat wanted to control the same running Claude/Gemini/etc. sessions from another PC or phone over Tailscale, "kapsam geniş olsun" (broad scope — not just viewing, full control including opening new panels/projects). Reusing renderer.js almost verbatim was far cheaper than building a second UI, but doing so naively (replaying the same boot sequence that spawns ptys) was found — before it ever shipped — to be actively dangerous: main.js's `pty:spawn` kills+replaces whatever already holds an id, so a remote page load could have silently killed live local sessions the moment ids collided. The attach/registry model exists specifically to close that hole. TripMate HQ integration (embedding via nested iframe) was considered and explicitly dropped by Murat in favor of just opening a second browser tab — see the 30 Aug 2026 log entry |
+| K23 | A saved session id is **re-verified against the file on disk before it is resumed** (`session:verify`), not trusted because it was saved. A record must carry provenance (`sessionSince`, the panel start its claim was judged against), its transcript must still be in the panel's folder, and that transcript must have been *created* at or after the claiming run. A record that fails is dropped and the panel starts clean — and, critically, it may not fall back to `claude -c` either | K19 fixed which id a panel *takes*; it did nothing about ids already saved. `sessionClaim` deliberately never drops an id it holds (a transient unreadable directory must not cost a panel its session), so three ids claimed under the old mtime rule survived every launch and kept resuming into Murat's own PowerShell conversation for two days (31 Aug 2026). A forward-only rule can't heal bad state; this is the backward half. Provenance rather than a heuristic re-check, because "was this file created by the run that claimed it" is the actual question and only the claiming run knows its own start time. The `-c` exclusion matters as much as the id check: `-c` means "continue this folder's latest conversation", so falling through to it after rejecting an id would land the panel in the same stranger's session by a different route |
 
 ---
 
@@ -780,7 +781,7 @@ two of them blockers, all three fixed and pinned with regression tests.
   fixed it. Worth remembering before debugging anything else in this file: **a change to
   `remote.js` needs an app restart, not just a reload.**
 
-#### Session claiming is still broken for already-saved ids (open, not yet fixed)
+#### Session claiming is still broken for already-saved ids (diagnosed, then fixed — see K23 below)
 
 Found while Murat was testing the remote view: panel 1 was showing *this* Claude
 conversation — the one running in an ordinary PowerShell window, outside multicli.
@@ -824,3 +825,67 @@ routinely spans several directories (one here had five, because the user `cd`s d
 session). So moving a transcript into another project's folder is a plain file move and
 `claude -r` keeps working; only `~/.claude/history.jsonl`'s `project` field goes stale, and
 that only affects prompt-history recall, not resuming.
+
+Acted on that immediately: the home-directory pool was split up, each session moved into
+the project folder it actually belonged to (M669, nexuscore, BlackBox, TripMateOPS,
+TripMate-Manuals, notebooklm-py, multicli), taking `~/.claude/projects/C--Users-murat/`
+from 21 transcripts / ~220 MB down to 10 / 76 MB. Two dead ones were deleted after being
+summarised and checked against the memory notes first. One misstep worth recording: a
+transcript was deleted while a `claude.exe --session-id` process still held it — it was a
+214-byte title stub so nothing was lost, but **check the process list before deleting a
+transcript**.
+
+#### The fix (K23) — `session:verify`
+
+Written the same afternoon. The shape of the bug is that `sessionClaim` only ever runs
+*forward*: it is careful about which id a panel takes, and then never questions one it
+already holds. Everything else follows from that, so the fix is a single backward check.
+
+- **`session:verify` (main.js)** — given a saved id, re-asserts the claim rule against the
+  file on disk and answers with the id or `null`. Three ways to fail: no provenance (a
+  record written before this check existed), the transcript isn't in this panel's folder
+  any more (it moved, or it was deleted), or the transcript was *created* before the run
+  that claimed it. That last one is the hijack: a foreign session's file predates the panel
+  entirely, which is exactly what all three bad records looked like.
+- **Provenance is `sessionSince`** — the `spawnedAt` a claim was judged against, recorded in
+  `claimPanelSession` only when the id actually *changes*, and carried through the workspace
+  record, the live-panel registry and `panel:new`. Deliberately not re-stamped on a restore:
+  the transcript's birthtime has to be compared against the *original* run, so overwriting
+  it with the current spawn would destroy the only evidence there is.
+- **`restoreCommandFor` gained `distrusted`** — because dropping the id alone would have
+  quietly undone the whole thing. With no id and a sole panel for its folder, K20's case 2
+  fires `claude -c`, which means "continue this folder's latest conversation" — the same
+  hijack by another route. If verification *rejected* an id, `-c` is off the table too.
+- `resolveCwd()` was pulled out of `ptySpawn` so the folder for an unspawned panel can be
+  worked out at restore time, which is the one moment the check needs it.
+- Seven cases added to `test/session-claim.test.js` (10 → 17, full suite green). They build
+  real files in a real order, because birthtime can't be faked through `fs.utimes`.
+
+Not done, still open: **multicli's own session picker**. "Choose Session…" still shells out
+to bare `claude -r` and its CLI picker, so a deliberately chosen session stays invisible to
+the app. That needs `sessions:list` plus a preview, and it's a feature rather than a bug —
+the birthtime rule should only ever guard *automatic* claims, never an explicit one.
+
+`defaultBaseDir` is **still** the home directory — worth being precise about, because it was
+briefly recorded here as fixed on the strength of a config file that turned out to be dead.
+There are two userData folders: `%APPDATA%\multicli\` (stale, last written 26 Aug, from
+before `productName` was set) and `%APPDATA%\MultiCli for AI Agent Management\` (live, the
+one `app.getPath('userData')` actually resolves to). Read the second one. The generator side
+of the bug therefore stands, and it only stays harmless as long as every panel has a real
+project folder assigned.
+
+Verified in the running app, not just in the harness. Murat exited his sessions and closed
+the app, so it was relaunched with `--remote-debugging-port` and driven over CDP — which
+goes through the real renderer → preload → `ipcMain` → main.js path, the part a test that
+`eval`s functions out of main.js can't reach. All three panels restored, zero renderer
+errors, and against a real transcript (multicli's own): a legitimate provenance keeps the
+id, a transcript predating the panel by an hour is dropped, a record with no provenance is
+dropped, an unknown id is dropped, and the same id checked against another project's folder
+is dropped. `restoreCommandFor` was exercised in the live renderer too, including the case
+that matters most — **id rejected ⇒ `claude` fresh, not `claude -c`**. The workspace now
+persists `sessionSince` alongside `sessionId`.
+
+Two things this could not prove, because doing so would mean burning real tokens on a live
+CLI: that a *fresh* claim stamps `sessionSince` correctly end-to-end, and that a genuine
+restore resumes the right conversation. Both run through code paths that are covered by
+`test/session-claim.test.js`, but the first real restore is still the moment to watch.

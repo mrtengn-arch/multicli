@@ -10,6 +10,11 @@
 // it. Attribution keys off creation time now, and this file exists so that can't quietly
 // regress back to mtime.
 //
+// Fixing the claim rule turned out not to fix the bug, which is the second half of this
+// file: ids claimed under the old rule were already saved, and nothing ever re-questioned
+// a saved id, so every launch walked back into the same conversation. session:verify is
+// the backward check added on 31 Aug 2026 — these cases pin down what it must reject.
+//
 // Fixtures are built on disk rather than mocked because birthtime is the whole point and
 // it can't be faked through fs.utimes — the files have to genuinely be created in order.
 const fs = require('fs');
@@ -30,17 +35,25 @@ const ipcMain = { handle: (name, fn) => { handlers[name] = fn; } };
 // table, not just ipcMain) — grab each function body plus its own one-line
 // `ipcMain.handle(...)` registration, rather than assuming the handler body sits inline
 // inside the registration call itself.
+// resolveCwd consults the saved config for its fallback; the fixture never needs the
+// fallback (its cwd is a directory that really exists), so an empty config is enough.
+const loadConfig = () => ({});
 eval([
   grab(/function readRecentJsonlLines[\s\S]*?\n\}/),
   grab(/function claudeProjectDirFor[\s\S]*?\n\}/),
+  grab(/function resolveCwd[\s\S]*?\n\}/),
   grab(/function sessionDirFor[\s\S]*?\n\}/),
   grab(/function sessionFilesIn[\s\S]*?\n\}/),
   grab(/function sessionClaim[\s\S]*?\nipcMain\.handle\('session:claim', sessionClaim\);/),
+  grab(/function sessionVerify[\s\S]*?\nipcMain\.handle\('session:verify', sessionVerify\);/),
   grab(/function readSessionUsage[\s\S]*?\n\}/),
   grab(/function quotasGetSession[\s\S]*?\nipcMain\.handle\('quotas:getSession', quotasGetSession\);/),
 ].join('\n'));
 
-const CWD = 'C:\\fake\\project';
+// A real directory, because session:verify resolves the cwd the way pty:spawn does and
+// would otherwise fall through to the configured default.
+const CWD = path.join(FIXTURE, 'project');
+fs.mkdirSync(CWD, { recursive: true });
 const dir = claudeProjectDirFor(CWD);
 fs.mkdirSync(dir, { recursive: true });
 
@@ -69,7 +82,9 @@ const claim = (o) => handlers['session:claim'](null, { agentId: 'claude', cwd: C
 const usage = (sessionId) => handlers['quotas:getSession'](null, { agentId: 'claude', cwd: CWD, sessionId });
 
 let fails = 0;
+let total = 0;
 const check = (label, got, want) => {
+  total++;
   const pass = JSON.stringify(got) === JSON.stringify(want);
   if (!pass) { fails++; console.log(`FAIL  ${label}\n        got  ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`); }
 };
@@ -99,10 +114,33 @@ check('claimed session reports its own tokens', usage('mine'), { tokens: 1500, m
 check('unclaimed panel reports nothing rather than a neighbour figure', usage(null), null);
 check('bogus session id', usage('no-such-session'), null);
 
+// ---- session:verify — is a *saved* id still safe to resume into? ----
+// `since` is the panel start the id was originally claimed against, carried in the
+// workspace record. 'mine' was created after spawnedAt, 'foreign' well before it.
+const verify = (o) => handlers['session:verify'](null, { agentId: 'claude', cwd: CWD, ...o });
+
+check('an id claimed by this panel survives a restart',
+  verify({ sessionId: 'mine', since: spawnedAt }), 'mine');
+// The actual bug: this record looks perfectly well-formed, and resuming it walks into
+// a conversation the panel never started.
+check('an id whose transcript predates the panel is dropped',
+  verify({ sessionId: 'foreign', since: spawnedAt }), null);
+check('a record from before provenance was tracked is dropped',
+  verify({ sessionId: 'mine', since: null }), null);
+check('an id whose transcript is gone is dropped',
+  verify({ sessionId: 'no-such-session', since: spawnedAt }), null);
+// Moving a session to another project is a plain file move, so this happens for real.
+check('an id that has moved to another project folder is dropped',
+  verify({ sessionId: 'mine', cwd: path.join(FIXTURE, 'elsewhere'), since: spawnedAt }), null);
+check('no id to check',
+  verify({ sessionId: null, since: spawnedAt }), null);
+check('agent with no readable transcript store',
+  verify({ agentId: 'qwen', sessionId: 'mine', since: spawnedAt }), null);
+
 fs.rmSync(FIXTURE, { recursive: true, force: true });
 
 if (fails === 0) {
-  console.log('all 10 session-attribution cases passed');
+  console.log(`all ${total} session-attribution cases passed`);
 } else {
   console.log(`${fails} case(s) failed`);
   process.exit(1);

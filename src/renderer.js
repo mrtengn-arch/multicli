@@ -334,6 +334,11 @@ async function claimPanelSession(id, { allowReclaim = false } = {}) {
   } catch { return; }
   if (!claimed || claimed === p.sessionId) return;
   p.sessionId = claimed;
+  // Provenance, recorded only when the id actually changes: which panel start this claim
+  // was judged against. A restored panel that keeps its id keeps the *original* run's
+  // number, because that's what the transcript's creation time has to be compared to —
+  // overwriting it with the current spawn would erase the only evidence session:verify has.
+  p.sessionSince = p.spawnedAt;
   announcePanel(id); // keep the live registry's copy of sessionId current for later attachers (K22)
   saveWorkspaceSoon(); // the id is what makes the next restore land on the right session
 }
@@ -348,7 +353,7 @@ function announcePanel(id) {
   if (!p) return;
   window.multicli.panels.announce({
     id, agentId: p.agent.id, projectDir: p.projectDir, key: p.key,
-    cwd: p.cwd, sessionId: p.sessionId, geom: p.geom,
+    cwd: p.cwd, sessionId: p.sessionId, sessionSince: p.sessionSince ?? null, geom: p.geom,
   });
 }
 
@@ -780,6 +785,7 @@ function buildPanel(id, agent, projectDir, key) {
     // and which conversation a restore resumes. Claimed shortly after spawn.
     cwd: null,
     sessionId: null,
+    sessionSince: null, // the spawnedAt the sessionId was claimed against — see session:verify
     spawnedAt: null,
     // Canvas geometry; filled in lazily by placeOnCanvas() the first time this panel
     // is rendered on the canvas, or restored from the workspace.
@@ -1211,6 +1217,7 @@ function collectWorkspace() {
       agentId: p.agent.id,
       projectDir: p.projectDir,
       sessionId: p.sessionId || null, // resume THIS session, not "the folder's latest"
+      sessionSince: p.sessionSince ?? null, // ...but only if it still checks out (session:verify)
       geom: p.geom ? { ...p.geom } : null,
     })),
   };
@@ -1277,7 +1284,10 @@ async function startAgentPanel(agent, startCommand, opts = {}) {
   buildPanel(id, agent, dir, opts.key);
   const p = panels.get(id);
   if (opts.geom) p.geom = { ...opts.geom };
-  if (opts.sessionId) p.sessionId = opts.sessionId;
+  if (opts.sessionId) {
+    p.sessionId = opts.sessionId;
+    p.sessionSince = opts.sessionSince ?? null;
+  }
 
   // Add the new panel next to the existing ones and re-render the current view
   // (existing panels are preserved).
@@ -1346,6 +1356,7 @@ async function reassignPanelProject(id, anchorEl) {
     p.cwd = await window.multicli.pty.spawn(id, dir);
     p.projectDir = dir;
     p.sessionId = null;      // different folder = different transcript; re-claim below
+    p.sessionSince = null;
     p.spawnedAt = Date.now();
     p.label = labelFor(p.agent, dir);
     p.el.querySelector('.panel-title').textContent = p.label;
@@ -1477,6 +1488,7 @@ window.multicli.panels.onNew((meta) => {
   const p = panels.get(meta.id);
   p.cwd = meta.cwd ?? null;
   p.sessionId = meta.sessionId ?? null;
+  p.sessionSince = meta.sessionSince ?? null;
   if (meta.geom) p.geom = { ...meta.geom };
   renderView();
   fitPanel(meta.id);
@@ -1728,8 +1740,15 @@ function showSessionModePicker(anchorEl, agent) {
 // thread, but landing in someone else's thread is worse, and the dimmed scrollback replay
 // still shows what the panel was doing. `siblings` is how many restored panels share this
 // panel's (agent, folder) pair.
-function restoreCommandFor(agent, sessionId, siblings) {
+//
+// `distrusted` says the panel *had* an id and session:verify rejected it. That also rules
+// out case 2, which would otherwise quietly undo the whole check: `-c` means "continue this
+// folder's latest conversation", and the reason the id was rejected is that we can't tell
+// whose conversations this folder holds. Falling through to `-c` there is how a panel would
+// land in the user's own PowerShell session anyway (31 Aug 2026).
+function restoreCommandFor(agent, sessionId, siblings, { distrusted = false } = {}) {
   if (sessionId && agent.resumeCommand) return `${agent.resumeCommand} ${sessionId}`;
+  if (distrusted) return agent.command;
   if (siblings === 1 && agent.continueCommand) return agent.continueCommand;
   return agent.command;
 }
@@ -1760,10 +1779,22 @@ async function restoreWorkspace(ws) {
     const siblings = ws.panels.filter(
       (o) => o.agentId === rec.agentId && (o.projectDir ?? null) === (rec.projectDir ?? null),
     ).length;
-    await startAgentPanel(agent, restoreCommandFor(agent, rec.sessionId, siblings), {
+    // Never resume on the record's say-so — re-check it against the file on disk first.
+    // A record that doesn't survive this comes back null and the panel starts clean,
+    // which is the whole point: a fresh start costs a thread, resuming into a stranger's
+    // conversation costs the stranger's (31 Aug 2026).
+    let sessionId = null;
+    try {
+      sessionId = await window.multicli.session.verify(
+        rec.agentId, rec.projectDir ?? null, rec.sessionId || null, rec.sessionSince || null,
+      );
+    } catch { /* treat an unreachable check as "can't vouch for it" */ }
+    const distrusted = !!rec.sessionId && !sessionId;
+    await startAgentPanel(agent, restoreCommandFor(agent, sessionId, siblings, { distrusted }), {
       key: rec.key,
       projectDir: rec.projectDir ?? null,
-      sessionId: rec.sessionId || null,
+      sessionId,
+      sessionSince: sessionId ? rec.sessionSince : null,
       geom: rec.geom || null,
       restore: true,
     });
@@ -1790,6 +1821,7 @@ async function attachLivePanels() {
     const p = panels.get(meta.id);
     p.cwd = meta.cwd ?? null;
     p.sessionId = meta.sessionId ?? null;
+    p.sessionSince = meta.sessionSince ?? null;
     if (meta.geom) p.geom = { ...meta.geom };
     // Best-effort catch-up only — as fresh as the last debounced scrollback save, not a
     // truly live tail of everything since the pty started. Good enough: it's the same
