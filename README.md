@@ -10,6 +10,12 @@ own live session title and that session's token count:
 
 ![multicli canvas view](.github/screenshot-canvas.png)
 
+Remote access — the same live panels, running on the desktop machine, reached from
+another device's browser over a Tailscale tailnet. Not a mirror: you can type into these
+sessions, open new panels and switch projects from here.
+
+![multicli remote access in a browser](.github/screenshot-remote.png)
+
 ## Features
 
 - **Directly typable panel grid** — each panel is a real `node-pty` + `xterm.js`
