@@ -31,11 +31,22 @@ decision, add it to §4 with a K-number.
   every process named `electron.exe` **system-wide**, not just the one under test, and
   could take down an unrelated Electron app the user has open. Kill the specific PID (or
   its PID tree) instead (30 Aug 2026 lesson).
+- **A change to `remote.js` (or anything else `require`d by `main.js`) needs the app
+  restarted, not reloaded.** Main-process modules are loaded once at startup, so a running
+  instance keeps serving the old code — which is what made a fixed remote page still come
+  up broken for half an hour (31 Aug 2026 lesson).
+- **Never call a browser-rendered page verified because you fetched it.** Fetching
+  `remote.html` returned a healthy 200 while the page was completely broken in a real
+  browser: the failure lived in the subresource requests the browser makes on its own.
+  Load it in an actual browser and check something only a working page can satisfy
+  (`document.styleSheets.length`, `window.multicli`, a live round trip) — 31 Aug 2026,
+  and the test suite had been asserting the broken behaviour as correct.
 
 ## Structure and references
 
 - Folder: `C:\Users\murat\Projects\multicli`
-- Repo: https://github.com/mrtengn-arch/multicli (public, MIT licensed, 26 Aug 2026)
+- Repo: https://github.com/mrtengn-arch/MultiCli (public, MIT licensed, 26 Aug 2026;
+  renamed from `multicli` on 31 Aug 2026 — the old URL still redirects)
 - Related memory notes: [[feedback_cost_delegation]] (the project's "why"),
   [[project_ai_limit_hq]] (a similar "quota tracking" idea but a different product — one
   is a browser extension + dashboard, this is a terminal tool), [[project_conduit]] (the
