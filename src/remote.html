@@ -2,10 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
-<title>MultiCli for AI Agent Management</title>
-<link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
-<link rel="stylesheet" href="styles.css" />
+<!-- connect-src 'self' (missing from index.html's CSP) is the only real difference from
+     the Electron page — this one needs to open a WebSocket back to the server it came
+     from. Everything else about this file is index.html with its three
+     `../node_modules/@xterm/...` paths rewritten to the `/vendor/...` routes remote.js's
+     static allowlist actually serves (see ALLOWED_FILES there). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self';" />
+<title>MultiCli for AI Agent Management (Remote)</title>
+<link rel="stylesheet" href="/vendor/xterm.css" />
+<link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 
@@ -62,6 +67,8 @@
     </div>
 
     <div id="titlebar-right">
+      <!-- Window controls are hidden here (see styles.css `body.remote #titlebar-right`)
+           — a browser tab already has its own minimize/maximize/close chrome. -->
       <button class="win-btn" data-action="minimize" title="Minimize">&#xE921;</button>
       <button class="win-btn" data-action="maximize" title="Maximize/Restore">&#xE922;</button>
       <button class="win-btn win-close" data-action="close" title="Close">&#xE8BB;</button>
@@ -109,8 +116,9 @@
     <span id="shortcut-hint-text">PageUp/PageDown scroll · Ctrl+1–8 switch panel</span>
   </div>
 
-<script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
-<script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
-<script src="renderer.js"></script>
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/remote-bridge.js"></script>
+<script src="/renderer.js"></script>
 </body>
 </html>

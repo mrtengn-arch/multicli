@@ -189,8 +189,77 @@ mini indicators and the right-side dock cards. No network requests are made at a
   drag/zoom feel, the board re-flowing live, a full workspace restore across a restart,
   and what a restored `claude -c` panel does when there's no prior session to continue.
 - Possible follow-ups from the nodeterm review that were *not* taken: git staging/commit
-  UI in-panel, GitHub Issues on the board, remote access (mobile/browser). None of these
-  were asked for; noted only so the comparison isn't lost.
+  UI in-panel, GitHub Issues on the board. Remote access (mobile/browser) *was* taken —
+  see §3.7 (K22, 30 Aug 2026).
+
+### 3.7 Remote Access (K22, 30 Aug 2026)
+
+**What it's for:** control the *same* running panels — same live pty sessions, same
+folders, same conversations — from another PC or phone, over Tailscale (or plain LAN),
+instead of only from the desktop window. Broad scope, per Murat: not just viewing/typing
+into existing panels, but opening new ones and switching projects too — full parity with
+the desktop app, because it's genuinely the same renderer.js talking to the same
+main.js, just over a different transport.
+
+**Starting it:** View → Start Remote Access… (host-only; also the item's label toggles to
+"Stop Remote Access" once running). This generates a random per-install token (stored in
+the config file, `crypto.randomBytes(18).toString('base64url')`) the first time, starts
+the HTTP+WS server (`remote.js`, port 4173 by default), shows a `dialog.showMessageBox`
+with the candidate URLs, copies the primary one to the clipboard, and opens it in the
+system's default browser via `shell.openExternal` — landing in a **new window**, per
+Murat's explicit ask ("uzak erişimi yeni pencerede başlatacak şekilde geliştirelim").
+
+**Transport:** a plain HTTP server (static files) + WebSocket server (`ws` package —
+the one new dependency this feature needed; no QR-code library was added, keeping with
+the project's usual minimal-dependency preference, see K16). No TLS — this is meant to be
+reached over a Tailscale tailnet or a trusted LAN, not the open internet, so the
+complexity of certificates was deliberately skipped. `candidateUrls()` in `remote.js`
+prefers a Tailscale-named network interface first (its `100.64.0.0/10` CGNAT address),
+falling back to ordinary LAN IPs.
+
+**Security:** every HTTP request and the WS upgrade require a `?token=` query param
+matching the stored token (checked in `remote.js`); the static file server is an
+explicit allowlist (`ALLOWED_FILES`), not a directory root, so there's no path-traversal
+surface even though the server is genuinely network-reachable.
+
+**Reuse strategy:** `src/renderer.js`, `src/styles.css`, and the xterm.js bundle are
+served to the browser completely unmodified — only the `window.multicli` bridge differs.
+`src/remote-bridge.js` implements the identical method surface as `preload.js` but
+speaks JSON over the shared WebSocket instead of `contextBridge`/`ipcRenderer`; it also
+sets `window.__MULTICLI_REMOTE__ = true`, which is the one flag renderer.js checks to
+know it's not running inside Electron. `src/remote.html` is `index.html` with its
+`../node_modules/@xterm/...` paths rewritten to the `/vendor/...` routes the server
+allowlists, and `remote-bridge.js` included before `renderer.js`. Clipboard operations
+are deliberately implemented client-side (`navigator.clipboard`), not round-tripped to
+the host, since copy/paste should act on the *viewing* device's clipboard.
+
+**The danger this design avoids:** naively letting a remote page run the exact same boot
+sequence as the host (spawn a pty per saved workspace panel) would have been able to
+silently kill live local sessions, because panel ids used to be a simple per-page-load
+counter — a remote tab and the host each starting from 0 could mint the identical id for
+their first panel, and `pty:spawn` unconditionally kills+replaces whatever already holds
+an id. Fixed two ways: ids are now collision-resistant (`mintPanelId()`, incorporates
+`Date.now()`/`Math.random()`), and a **live-panel registry** in main.js (`panelMeta`,
+populated by fire-and-forget `panel:announce`/`panel:closed` calls from any renderer)
+lets a newly-connecting viewer call `panels:listLive` and **attach** to what's already
+running (`attachLivePanels()`, reusing `buildPanel()` without calling `pty.spawn`)
+instead of spawning fresh copies. `restoreWorkspace()`'s disk-snapshot spawn path now
+only runs on the host, and even then skips any `key` that attach already covered — which
+incidentally also fixed a latent devtools-hot-reload bug where reloading the host window
+used to spawn duplicate ptys on top of the still-running old ones.
+
+**Multi-viewer sync:** `main.js`'s `broadcast(channel, payload, exceptSender)` fans
+`pty:data`/`pty:exit`/`panel:new`/`panel:closed` out to the local window AND every
+connected remote socket (via `remote.broadcast(...)`), skipping the originating sender so
+an event never echoes back to whoever caused it. This is what makes the host and any
+number of remote tabs converge on the same panel set and the same terminal output.
+
+**Not done:** embedding the remote UI inside another page (TripMate HQ was considered and
+explicitly dropped by Murat — a nested iframe would have needed HTTPS via Tailscale Serve
+and compatible CSP/X-Frame-Options, for no real benefit over just opening a second browser
+tab); a QR code for the URL (Murat didn't ask for one, and it would have been the only new
+dependency purely for convenience); TLS/HTTPS (see above — out of scope while this stays
+Tailscale/LAN-only).
 
 ---
 
@@ -219,6 +288,7 @@ mini indicators and the right-side dock cards. No network requests are made at a
 | K19 | A panel **claims a specific session transcript** shortly after it starts (`session:claim`) — the newest file in its cwd's session dir **created after the panel spawned** and not already claimed by a sibling. That claimed id drives both the token badge in the panel head and which conversation a restore resumes. A panel that can't find such a file claims nothing, and `quotas:getSession` returns nothing rather than falling back to the folder's newest file | There is no handle tying a spawned CLI process to the file it writes, but both Claude and Gemini shard session files by cwd, which the panel knows — cwd narrows it to a folder, and creation time picks the right file within it. **Modification time can't**: the user often has a CLI running in an ordinary terminal outside multicli in the same folder, and being active it is *always* the most recently modified file, so an mtime rule hands the panel a stranger's conversation (found this way on 29 Aug 2026 — the panel billed itself for that session's tokens and then resumed into it). Claiming is retried (3s/8s/20s, then on every token refresh) because the transcript often doesn't exist until the first exchange. Only claude/gemini have a readable local source (same constraint as §3.5); other agents render nothing rather than a `0` that would read as a real measurement. `test/session-claim.test.js` pins the behaviour |
 | K20 | Restore resumes **the panel's own session** (`claude -r <id>`). `-c` is used only when a panel is the *sole* restored panel for its (agent, folder) pair; otherwise the panel starts fresh | Found the hard way on the first restore after K16 shipped (29 Aug 2026, Murat): `claude -c` means "continue the folder's most recent conversation", so restoring three Claude panels rooted in the same folder silently collapsed all three into one. K19's session id fixes the normal case; the sibling count handles the leftover one, since firing `-c` from several panels at once can only ever be wrong. Starting fresh loses the thread, but landing in *someone else's* thread is worse, and the dimmed scrollback replay still shows what the panel was doing |
 | K21 | The bottom shortcut bar (Copy/Paste/Select All, K14) becomes **toggleable, default on** rather than deleted | Murat found it redundant in practice — PowerShell's own right-click already does copy/paste (29 Aug 2026). Deleting it would throw away working code and the keyboard-hint text it carries; a View-menu toggle keeps it for anyone who wants the buttons and costs one line of state. This supersedes K14's "buttons are always visible", not the shared-function refactor underneath it |
+| K22 | Remote access is **attach to the live desktop session**, not a second independent instance: a plain HTTP+WS server in the main process (View → Start Remote Access…) serves the same renderer.js/styles.css/xterm bundle to a browser, backed by a WebSocket bridge (`remote-bridge.js`) that mimics preload.js's exact `window.multicli` surface. No TLS (meant for a Tailscale tailnet or plain LAN, not the open internet); a random per-install token gates every request as defense-in-depth. A new main.js-side live-panel registry (`panelMeta`, populated by `panel:announce`/`panel:closed`) lets any newly-connecting viewer — a remote tab, or the host itself after a devtools reload — **attach** to already-running panels via `attachLivePanels()` instead of spawning duplicates; `restoreWorkspace()`'s disk-snapshot spawn path only runs on the host and skips anything already attached. Panel ids were also made collision-resistant (`mintPanelId()`) since two independent JS contexts (host window + remote tab) used to both start counting from 0 | Murat wanted to control the same running Claude/Gemini/etc. sessions from another PC or phone over Tailscale, "kapsam geniş olsun" (broad scope — not just viewing, full control including opening new panels/projects). Reusing renderer.js almost verbatim was far cheaper than building a second UI, but doing so naively (replaying the same boot sequence that spawns ptys) was found — before it ever shipped — to be actively dangerous: main.js's `pty:spawn` kills+replaces whatever already holds an id, so a remote page load could have silently killed live local sessions the moment ids collided. The attach/registry model exists specifically to close that hole. TripMate HQ integration (embedding via nested iframe) was considered and explicitly dropped by Murat in favor of just opening a second browser tab — see the 30 Aug 2026 log entry |
 
 ---
 
@@ -597,3 +667,99 @@ complaints and, in the second case, the exact diagnosis.
   has to be cleared *after* quitting multicli —
   `%APPDATA%\MultiCli for AI Agent Management\multicli-config.json` (note the folder is named
   after `productName`, not `multicli`).
+
+### 2026-08-30
+
+- **Remote access implemented (K22)** — see §3.7 for the full design. Summary: a
+  Tailscale/LAN-reachable HTTP+WS server (`remote.js`, new `ws` dependency) serves the
+  existing `src/renderer.js`/`styles.css`/xterm bundle to a browser via a new
+  `src/remote-bridge.js` bridge (mirrors `preload.js`'s `window.multicli` surface over
+  WebSocket instead of `contextBridge`), gated by a per-install random token. `main.js`
+  gained a live-panel registry (`panelMeta`, `panel:announce`/`panel:closed`,
+  `panels:listLive`) and a `broadcast()` helper so every attached viewer (desktop + any
+  number of remote tabs) converges on the same panel set and terminal output.
+  `renderer.js` gained `attachLivePanels()` (attach to what's already running instead of
+  spawning a duplicate) and collision-resistant panel ids (`mintPanelId()`), since the
+  old per-page-load sequential counter could let a remote tab and the host mint the same
+  id and have `pty:spawn` silently kill a live local session — found by tracing the
+  design before it ever shipped, not by hitting the bug.
+- Along the way, converted the rest of `main.js`'s `ipcMain.handle`/`ipcMain.on` bodies
+  (pty:write/resize/kill) into named top-level functions, matching the earlier
+  handler-conversion pass, so every one of them is reachable from both Electron IPC and
+  the new remote WebSocket dispatch table off one shared implementation.
+- **TripMate HQ integration was considered and dropped.** The plan was to embed the
+  remote web UI in an iframe inside TripMate HQ (GAS); Murat looked at the actual
+  requirements (HTTPS via Tailscale Serve, X-Frame-Options/CSP compatibility, a
+  triple-nested-iframe) and decided a second plain browser tab is simpler and just as
+  good — nothing was embedded, no GAS changes were made.
+- **Verified end-to-end** — but see the 2026-08-31 entry: "end-to-end" here stopped at
+  *fetching* `remote.html`, which is not the same as a browser *loading* it, and that gap
+  hid a blocker. The rest of what's described below did hold up. `test/remote.test.js` (new, added to
+  `npm test`) exercises the plain HTTP/WS server directly — token gate on both HTTP and
+  the WS upgrade, a static file fetch, a call/result round trip (including an
+  unregistered method and a throwing handler both resolving instead of hanging), and
+  `broadcast()`'s exceptSender exclusion. Separately, launched the real Electron app with
+  `--remote-debugging-port` and drove it over CDP: confirmed the "Start Remote Access…"
+  menu item exists, `window.multicli.remote.start()` actually starts the server and
+  returns real Tailscale/LAN URLs (the Tailscale interface was correctly detected and
+  sorted first), fetched `remote.html` through the running server with the real token,
+  opened a real WebSocket to it and called `panels:listLive`, which correctly returned
+  the 3 real panels the desktop window had open (ids, agentId, cwd, sessionId, geom) —
+  proof the announce → registry → remote-dispatch path works with the live app, not just
+  mocked handlers. Also fixed a latent bug this surfaced: `test/session-claim.test.js`'s
+  source-extraction regexes assumed `session:claim`/`quotas:getSession` were still
+  inline `ipcMain.handle` arrow bodies, which an earlier pass in this same session had
+  already converted to named functions + one-line registrations — the regexes now grab
+  the function body and its registration line separately.
+- **Also fixed a self-inflicted process-management mistake made during that CDP
+  verification**: cleaned up the test Electron instance with `taskkill /IM electron.exe
+  /T`, which kills every process named `electron.exe` **system-wide**, not just the one
+  launched for the test — the right tool is killing the specific PID tree (or just
+  closing the window) instead. No other Electron-based app appeared to be affected this
+  time (checked immediately after), but the command itself was wrong and shouldn't be
+  reused.
+- Documented §3.7 and this K22 decision; §3.6's stale "remote access... not taken" note
+  updated to point here.
+
+### 2026-08-31
+
+Review pass over the (still uncommitted) K22 work, at Murat's request. Three bugs found,
+two of them blockers, all three fixed and pinned with regression tests.
+
+- **The remote page loaded with no CSS and no JS.** `handleHttp` required `?token=` on
+  *every* request, but only the page URL carries a query string — the `<link>`/`<script>`
+  it pulls in are root-absolute paths (`/styles.css`, `/renderer.js`, `/vendor/xterm.js`),
+  so all six subresources 401'd and the browser got bare HTML. Fixed by issuing the token
+  as an `HttpOnly; SameSite=Strict; Path=/` cookie on the entry pages (`/`, `/remote.html`)
+  and accepting *either* query or cookie in a new `authorized(req)`, used by both the HTTP
+  handler and the `/ws` upgrade. The gate is preserved, not weakened: a forged cookie is
+  still rejected. `Secure` is deliberately omitted — there's no TLS here and a Secure
+  cookie over plain HTTP is silently dropped.
+- **Why it shipped, which matters more than the bug:** yesterday's "verified end-to-end"
+  step *fetched* `remote.html` and got a healthy 200. That tells you nothing about whether
+  a browser can use the page, because the failure lives entirely in the follow-up requests
+  the browser makes on its own. Worse, `test/remote.test.js` asserted `static file without
+  token -> 401`, which actively locked the bug in. The lesson: for anything a browser
+  renders, the verification has to be *a browser*. This time it was — the page was opened
+  in Chrome against a standalone Node harness (no Electron, so the running app was left
+  alone) and checked for `document.styleSheets.length > 0`, `typeof window.multicli ===
+  'object'`, a live WS round trip to a real handler, and a clean console.
+- **A busy port bricked the feature until restart.** A failed `listen` left the module
+  holding a dead server whose `address()` is null, so the *next* "Start Remote Access"
+  click took the already-running early exit and threw "Cannot read properties of null"
+  instead of a real error — forever, even after the port freed up. Fixed by gating the
+  early exit on `server.listening` (not just non-null) and clearing `server`/`wss` in the
+  error handler before rejecting.
+- **A failed start was invisible.** The renderer's menu handler had no try/catch, so a
+  rejection went nowhere: no dialog, no label flip, the menu item just looked dead. Added
+  a catch plus a `remoteAccessFailed` string in both locales.
+- Tests: `test/remote.test.js` grew a "what a real browser actually does" block (entry
+  page hands out the cookie; each subresource loads on the cookie alone; a forged cookie
+  is rejected; a cookie-only WS upgrade is accepted — using the `ws` client, since the
+  global `WebSocket` can't set request headers) and a port-busy recovery block (EADDRINUSE
+  on the first try, *the same* EADDRINUSE on a retry rather than a null-deref, success once
+  the port is free). Windows gotcha worth remembering: the squatter socket must
+  `listen(port)` with no host to match `remote.js` and take the dual-stack wildcard —
+  pinning it to `0.0.0.0` leaves `::` free and the clash never happens, which is exactly
+  how the new checks first failed.
+- Full `npm test` green: attention, session-attribution, and all remote-access checks.

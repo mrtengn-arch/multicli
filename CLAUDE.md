@@ -27,6 +27,10 @@ decision, add it to §4 with a K-number.
   (29 Aug 2026 lesson).
 - Don't start coding before v2's architecture is settled; implement as PROJECT.md §3
   fills in.
+- Never clean up a test Electron launch with `taskkill /IM electron.exe /T` — it kills
+  every process named `electron.exe` **system-wide**, not just the one under test, and
+  could take down an unrelated Electron app the user has open. Kill the specific PID (or
+  its PID tree) instead (30 Aug 2026 lesson).
 
 ## Structure and references
 

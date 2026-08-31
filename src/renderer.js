@@ -61,6 +61,11 @@ const STRINGS = {
     restoredHistory: '[önceki oturumun geçmişi — canlı değil]',
     restoringSession: '[oturum geri yükleniyor…]',
     sessionTokens: (full, messages) => `Bu oturum: ${full} token · ${messages} mesaj`,
+    remoteAccessStart: 'Uzaktan Erişimi Başlat…',
+    remoteAccessStop: 'Uzaktan Erişimi Durdur',
+    remoteAccessUnavailable: 'Uzaktan erişim, uzak bir görüntüleyiciden başlatılamaz.',
+    remoteAccessStarted: (url) => `Uzaktan erişim başlatıldı ve tarayıcıda açıldı:\n${url}\n\n(Bağlantı panoya kopyalandı.)`,
+    remoteAccessFailed: (msg) => `Uzaktan erişim başlatılamadı:\n${msg}`,
   },
   en: {
     menuFile: 'File', menuAgents: 'Agents', menuView: 'View',
@@ -107,6 +112,11 @@ const STRINGS = {
     restoredHistory: '[history from the previous session — not live]',
     restoringSession: '[restoring session…]',
     sessionTokens: (full, messages) => `This session: ${full} tokens · ${messages} msgs`,
+    remoteAccessStart: 'Start Remote Access…',
+    remoteAccessStop: 'Stop Remote Access',
+    remoteAccessUnavailable: 'Remote access can’t be started from a remote viewer.',
+    remoteAccessStarted: (url) => `Remote access started and opened in your browser:\n${url}\n\n(Link copied to clipboard.)`,
+    remoteAccessFailed: (msg) => `Couldn’t start remote access:\n${msg}`,
   },
 };
 const LOCALE = (navigator.language || 'en').toLowerCase().startsWith('tr') ? 'tr' : 'en';
@@ -129,6 +139,7 @@ function applyStaticI18n() {
   document.getElementById('reset-canvas-item').textContent = t.resetCanvas;
   document.querySelector('#toggle-restore-item .name').textContent = t.restoreOnStart;
   document.querySelector('#toggle-shortcut-bar-item .name').textContent = t.shortcutBar;
+  document.getElementById('remote-access-item').textContent = t.remoteAccessStart;
   document.getElementById('dock-title').textContent = t.dockTitle;
   document.getElementById('dock-hint').textContent = t.dockHint;
   document.querySelector('#shortcut-copy-btn .btn-label').textContent = t.copyBtn;
@@ -154,6 +165,15 @@ let savedProjects = []; // [{ name, path }] — the list of saved locations in t
 let availableAgents = [];
 let bodyObservers = new Map(); // panelId -> ResizeObserver
 let panelSeq = 0;
+
+// Collision-resistant across independent JS contexts (K22): a plain `${agent.id}-${++panelSeq}`
+// restarts from 0 in every page load, so the local Electron window and a remote browser
+// tab could each mint the identical id for their first Claude panel — and main.js's
+// pty:spawn kills+replaces whatever already holds an id, so a remote page load could
+// silently kill a live local session sharing that id. Same recipe as newPanelKey() below.
+function mintPanelId(agentId) {
+  return `${agentId}-${++panelSeq}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
 
 // ---------------- View mode / canvas state (K15) ----------------
 // 'grid'   — the original split-pane grid (unchanged, still the default)
@@ -314,7 +334,22 @@ async function claimPanelSession(id, { allowReclaim = false } = {}) {
   } catch { return; }
   if (!claimed || claimed === p.sessionId) return;
   p.sessionId = claimed;
+  announcePanel(id); // keep the live registry's copy of sessionId current for later attachers (K22)
   saveWorkspaceSoon(); // the id is what makes the next restore land on the right session
+}
+
+// Tells main.js's live-panel registry what this panel currently looks like, so a viewer
+// attaching later (a remote tab, or the host itself after a devtools reload) can
+// recreate the same DOM/xterm without spawning a duplicate pty (K22). Fire-and-forget,
+// called after anything that changes a panel's identity: spawn, project reassignment,
+// session claim.
+function announcePanel(id) {
+  const p = panels.get(id);
+  if (!p) return;
+  window.multicli.panels.announce({
+    id, agentId: p.agent.id, projectDir: p.projectDir, key: p.key,
+    cwd: p.cwd, sessionId: p.sessionId, geom: p.geom,
+  });
 }
 
 async function refreshPanelTokens(id) {
@@ -1238,7 +1273,7 @@ async function startAgentPanel(agent, startCommand, opts = {}) {
   // location is wanted, it can be changed for just this panel afterwards via the 📁
   // button. A restored panel brings its own folder instead.
   const dir = opts.projectDir !== undefined ? opts.projectDir : (openProject?.path ?? null);
-  const id = `${agent.id}-${++panelSeq}`;
+  const id = mintPanelId(agent.id);
   buildPanel(id, agent, dir, opts.key);
   const p = panels.get(id);
   if (opts.geom) p.geom = { ...opts.geom };
@@ -1255,6 +1290,7 @@ async function startAgentPanel(agent, startCommand, opts = {}) {
   // rather than `dir` — that resolved path is what the session lookup keys off.
   p.cwd = await window.multicli.pty.spawn(id, dir);
   p.spawnedAt = Date.now(); // lower bound for "which transcript file is mine"
+  announcePanel(id); // live-panel registry (K22) — lets a later viewer attach instead of respawn
   // The transcript usually doesn't exist for a few seconds, hence the staggered retries.
   // A restored panel joins in too (allowReclaim) in case its CLI forked a new session.
   [3000, 8000, 20000].forEach((ms) =>
@@ -1279,6 +1315,7 @@ function closePanel(id) {
   const p = panels.get(id);
   if (!p) return;
   window.multicli.pty.kill(id);
+  window.multicli.panels.closed(id); // un-announce (K22) — nothing left here to attach to
   clearTimeout(p.settleTimer);
   clearTimeout(p.boardTimer);
   bodyObservers.get(id)?.disconnect();
@@ -1312,6 +1349,7 @@ async function reassignPanelProject(id, anchorEl) {
     p.spawnedAt = Date.now();
     p.label = labelFor(p.agent, dir);
     p.el.querySelector('.panel-title').textContent = p.label;
+    announcePanel(id); // new cwd/projectDir under the same id (K22)
     [3000, 8000, 20000].forEach((ms) => setTimeout(() => claimPanelSession(id), ms));
     refreshPanelTokens(id);
     if (p.agent.command) {
@@ -1424,6 +1462,39 @@ window.multicli.pty.onExit(({ id, exitCode }) => {
   p.term.write(`\r\n\x1b[31m${t.processExited(exitCode)}\x1b[0m\r\n`);
   clearTimeout(p.settleTimer);
   setPanelStatus(id, 'exited');
+});
+
+// ---------------- Live panel add/remove from *other* viewers (K22) ----------------
+// The host opening a new panel while a remote tab is attached, or vice versa, needs to
+// show up on both sides — each viewer announces after spawning (announcePanel above)
+// and un-announces on close (closePanel above); this is what makes every attached
+// viewer converge on the same panel set.
+window.multicli.panels.onNew((meta) => {
+  if (panels.has(meta.id)) return;
+  const agent = availableAgents.find((a) => a.id === meta.agentId);
+  if (!agent) return;
+  buildPanel(meta.id, agent, meta.projectDir ?? null, meta.key);
+  const p = panels.get(meta.id);
+  p.cwd = meta.cwd ?? null;
+  p.sessionId = meta.sessionId ?? null;
+  if (meta.geom) p.geom = { ...meta.geom };
+  renderView();
+  fitPanel(meta.id);
+});
+window.multicli.panels.onClosed((id) => {
+  const p = panels.get(id);
+  if (!p) return;
+  bodyObservers.get(id)?.disconnect();
+  bodyObservers.delete(id);
+  p.term.dispose();
+  panels.delete(id);
+  if (activePanelId === id) activePanelId = null;
+  if (maximizedId === id) maximizedId = null;
+  renderView();
+  if (!activePanelId) {
+    const next = panels.keys().next().value;
+    if (next) setActive(next);
+  }
 });
 
 window.addEventListener('resize', () => requestAnimationFrame(fitAllPanels));
@@ -1540,6 +1611,34 @@ document.querySelector('[data-action="toggle-shortcut-bar"]').addEventListener('
   fitAllPanels(); // the terminals just gained or lost ~34px of height
 });
 
+// Remote access (K22) — host-only. In a remote viewer window.multicli.remote.start/stop
+// are no-ops (remote-bridge.js), so the click there just explains why instead of doing
+// nothing silently.
+const remoteAccessItem = document.getElementById('remote-access-item');
+if (window.__MULTICLI_REMOTE__) {
+  remoteAccessItem.addEventListener('click', () => window.alert(t.remoteAccessUnavailable));
+} else {
+  remoteAccessItem.addEventListener('click', async () => {
+    // Without the catch, a failed start (port already taken is the realistic one) went
+    // nowhere at all: the label never flipped, no dialog appeared, and the rejection
+    // only showed up in devtools — the menu item just looked dead.
+    try {
+      const status = await window.multicli.remote.status();
+      if (status?.running) {
+        await window.multicli.remote.stop();
+        remoteAccessItem.textContent = t.remoteAccessStart;
+      } else {
+        // main.js's remote:start handler does the URL dialog + clipboard + opening the
+        // browser itself — nothing more to do here than flip the label.
+        await window.multicli.remote.start();
+        remoteAccessItem.textContent = t.remoteAccessStop;
+      }
+    } catch (err) {
+      window.alert(t.remoteAccessFailed(String(err && err.message || err)));
+    }
+  });
+}
+
 document.querySelector('[data-action="copy"]').addEventListener('click', () => {
   if (activePanelId) copyPanelSelection(activePanelId);
 });
@@ -1648,7 +1747,14 @@ async function restoreWorkspace(ws) {
   }
   if (!restoreOnStart || !Array.isArray(ws.panels)) return;
 
+  // Anything attachLivePanels() (called just before this, see init()) already brought
+  // in — a devtools reload while panels were alive, or a remote tab attaching to an
+  // already-running host — must NOT also be spawned here, or it'd get a second, fresh
+  // pty duplicating the one that's already running under that `key` (K22).
+  const attachedKeys = new Set([...panels.values()].map((p) => p.key));
+
   for (const rec of ws.panels) {
+    if (rec.key && attachedKeys.has(rec.key)) continue;
     const agent = availableAgents.find((a) => a.id === rec.agentId);
     if (!agent) continue; // agent was removed from agents.json since the last run
     const siblings = ws.panels.filter(
@@ -1665,6 +1771,32 @@ async function restoreWorkspace(ws) {
 
   const first = panels.keys().next().value;
   if (first) setActive(first);
+}
+
+// Attach to whatever's already running (K22) instead of spawning fresh copies — used by
+// the host itself (fixes a latent devtools-hot-reload bug: reloading used to spawn
+// brand-new duplicate ptys right on top of the still-running old ones) and by any
+// remote tab connecting to an already-running desktop session. Reuses buildPanel()'s
+// DOM/xterm wiring but skips pty.spawn entirely — the pty already exists in main.js,
+// this just wires a fresh xterm to receive its future output (pty:data is broadcast to
+// every attached viewer, see main.js's broadcast()).
+async function attachLivePanels() {
+  const live = await window.multicli.panels.listLive();
+  for (const meta of live) {
+    if (panels.has(meta.id)) continue;
+    const agent = availableAgents.find((a) => a.id === meta.agentId);
+    if (!agent) continue;
+    buildPanel(meta.id, agent, meta.projectDir ?? null, meta.key);
+    const p = panels.get(meta.id);
+    p.cwd = meta.cwd ?? null;
+    p.sessionId = meta.sessionId ?? null;
+    if (meta.geom) p.geom = { ...meta.geom };
+    // Best-effort catch-up only — as fresh as the last debounced scrollback save, not a
+    // truly live tail of everything since the pty started. Good enough: it's the same
+    // trade-off K16's restore already makes.
+    await replayScrollback(p);
+  }
+  if (live.length) { renderView(); fitAllPanels(); }
 }
 
 (async function init() {
@@ -1692,9 +1824,21 @@ async function restoreWorkspace(ws) {
   buildAgentMenu(availableAgents);
   buildAgentColorMenu(availableAgents);
 
-  await restoreWorkspace(await window.multicli.workspace.get());
+  // Attach to whatever's already running before ever considering the on-disk snapshot
+  // (K22) — both the host and a remote viewer do this; only the host additionally falls
+  // back to restoreWorkspace()'s spawn-from-disk path below, and only for panels that
+  // attach didn't already cover, so this is safe on every kind of launch (cold start,
+  // devtools reload, remote tab joining a live host).
+  await attachLivePanels();
+  if (!window.__MULTICLI_REMOTE__) {
+    await restoreWorkspace(await window.multicli.workspace.get());
+  }
+  if (!activePanelId) {
+    const first = panels.keys().next().value;
+    if (first) setActive(first);
+  }
   refreshViewMenu();
-  renderView(); // shows the empty-state message (no panels) or lays out restored ones
+  renderView(); // shows the empty-state message (no panels) or lays out restored/attached ones
 
   refreshQuotas();
   setInterval(refreshQuotas, 45000); // passive scan, makes no network requests — fine to run often

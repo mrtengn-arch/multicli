@@ -36,6 +36,11 @@ own live session title and that session's token count:
 - **Real local quota tracking** — for Claude and Gemini, real token usage is read from
   local session files (no network requests at all) and shown live both in the title-bar
   mini indicators and the right-side quota panel.
+- **Remote access** (View → Start Remote Access…) — attach to and control your *actual*
+  running panels from another PC or phone's browser, over a Tailscale tailnet or plain
+  LAN: same sessions, same folders, full control (typing, opening new panels, switching
+  projects), not a read-only mirror. Token-gated, no TLS by design (see
+  [`PROJECT.md` §3.7](PROJECT.md)).
 - **UI language follows the system locale** (TR/EN).
 - Frameless, dark theme similar to Claude Desktop.
 
@@ -46,6 +51,7 @@ own live session title and that session's token count:
   (Microsoft's library, N-API based — no native rebuild needed on Windows)
 - [xterm.js](https://xtermjs.org/) ^6 (`@xterm/xterm` + `@xterm/addon-fit`) — the
   terminal emulator rendered inside each panel
+- [ws](https://github.com/websockets/ws) ^8 — the WebSocket server behind remote access
 
 ## Requirements
 

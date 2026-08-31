@@ -205,6 +205,11 @@ body {
 
 #titlebar-right { padding-right: 2px; }
 
+/* Remote access (K22): a browser tab already has its own minimize/maximize/close
+   chrome, so remote-bridge.js's fake window-control buttons would be redundant —
+   hidden here rather than left out of remote.html so the titlebar layout doesn't shift. */
+body.remote #titlebar-right { display: none; }
+
 .win-btn {
   font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
   width: 42px;

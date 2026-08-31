@@ -25,14 +25,19 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
 const grab = (re) => src.match(re)[0];
 const handlers = {};
 const ipcMain = { handle: (name, fn) => { handlers[name] = fn; } };
+// session:claim and quotas:getSession were pulled out into named top-level functions
+// (30 Aug 2026, so the same code is reachable from the remote-access WebSocket dispatch
+// table, not just ipcMain) — grab each function body plus its own one-line
+// `ipcMain.handle(...)` registration, rather than assuming the handler body sits inline
+// inside the registration call itself.
 eval([
   grab(/function readRecentJsonlLines[\s\S]*?\n\}/),
   grab(/function claudeProjectDirFor[\s\S]*?\n\}/),
   grab(/function sessionDirFor[\s\S]*?\n\}/),
   grab(/function sessionFilesIn[\s\S]*?\n\}/),
-  grab(/ipcMain\.handle\('session:claim'[\s\S]*?\n\}\);/),
+  grab(/function sessionClaim[\s\S]*?\nipcMain\.handle\('session:claim', sessionClaim\);/),
   grab(/function readSessionUsage[\s\S]*?\n\}/),
-  grab(/ipcMain\.handle\('quotas:getSession'[\s\S]*?\n\}\);/),
+  grab(/function quotasGetSession[\s\S]*?\nipcMain\.handle\('quotas:getSession', quotasGetSession\);/),
 ].join('\n'));
 
 const CWD = 'C:\\fake\\project';

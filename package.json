@@ -6,7 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test/attention.test.js && node test/session-claim.test.js"
+    "test": "node test/attention.test.js && node test/session-claim.test.js && node test/remote.test.js"
   },
   "keywords": [],
   "author": "Murat",
@@ -16,7 +16,8 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "electron": "^44.0.0",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0"

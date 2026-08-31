@@ -72,4 +72,21 @@ contextBridge.exposeInMainWorld('multicli', {
     onData: (cb) => ipcRenderer.on('pty:data', (_e, payload) => cb(payload)),
     onExit: (cb) => ipcRenderer.on('pty:exit', (_e, payload) => cb(payload)),
   },
+  // Remote access (K22) — host-only (a remote browser tab uses remote-bridge.js's own
+  // window.multicli instead of this file entirely, so it never sees these).
+  remote: {
+    start: () => ipcRenderer.invoke('remote:start'),
+    stop: () => ipcRenderer.invoke('remote:stop'),
+    status: () => ipcRenderer.invoke('remote:status'),
+  },
+  // The live-panel registry (K22): who's actually running right now, independent of
+  // the on-disk workspace snapshot. `announce`/`closed` are fire-and-forget, same
+  // reasoning as workspace:save above.
+  panels: {
+    listLive: () => ipcRenderer.invoke('panels:listLive'),
+    announce: (meta) => ipcRenderer.send('panel:announce', meta),
+    closed: (id) => ipcRenderer.send('panel:closed', id),
+    onNew: (cb) => ipcRenderer.on('panel:new', (_e, p) => cb(p)),
+    onClosed: (cb) => ipcRenderer.on('panel:closed', (_e, id) => cb(id)),
+  },
 });

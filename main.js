@@ -8,11 +8,13 @@
 //         29 Aug 2026 (K15/K16/K17): workspace + scrollback persistence, attention
 //         notifications; see the sections near the bottom of this file.
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, Notification, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const pty = require('node-pty');
+const crypto = require('crypto');
+const remote = require('./remote');
 
 // Safety net: an uncaught exception in the main process otherwise crashes the whole
 // app and shows Electron's native "A JavaScript error occurred in the main process"
@@ -217,7 +219,10 @@ function computeCodexUsage() {
   return null;
 }
 
-ipcMain.handle('quotas:get', () => {
+// Named (rather than an inline arrow passed straight to ipcMain.handle) so the same
+// function body can also be reached from a remote-access WebSocket call (see
+// `remoteHandlers` near the bottom) — one implementation, two transports.
+function quotasGet() {
   const safe = (fn) => { try { return fn(); } catch { return null; } };
   return {
     claude: safe(computeClaudeUsage),
@@ -226,7 +231,8 @@ ipcMain.handle('quotas:get', () => {
     codex: safe(computeCodexUsage),
     windowMs: QUOTA_WINDOW_MS,
   };
-});
+}
+ipcMain.handle('quotas:get', quotasGet);
 
 // ---- Per-panel ("this session") usage ----
 // Different question from the dock above: that one is a 5-hour rolling total across
@@ -287,7 +293,7 @@ function sessionFilesIn(dir) {
 // `current` is for restored panels: `claude -r <id>` may append to that transcript or fork
 // a new one, and only the file can tell us which happened. A held file still being written
 // to stays ours (mtime, not birthtime — its birthtime is legitimately from an earlier run).
-ipcMain.handle('session:claim', (_event, { agentId, cwd, sinceMs, taken, current }) => {
+function sessionClaim(_event, { agentId, cwd, sinceMs, taken, current }) {
   const dir = sessionDirFor(agentId, cwd);
   if (!dir || !sinceMs) return current || null;
   // Clock jitter only. Deliberately small: the CLI always creates its file *after* we
@@ -306,7 +312,8 @@ ipcMain.handle('session:claim', (_event, { agentId, cwd, sinceMs, taken, current
     if (!claimed.has(f.id)) return f.id;
   }
   return current || null; // nothing better on offer — don't drop a known id
-});
+}
+ipcMain.handle('session:claim', sessionClaim);
 
 // cutoff 0 = no time window; a session total covers the whole transcript.
 function readSessionUsage(agentId, file) {
@@ -331,7 +338,7 @@ function readSessionUsage(agentId, file) {
 // mistake as the mtime claim above — it happily billed a panel for an unrelated session
 // running in the same folder. A blank pill for a few seconds beats a confident wrong
 // number, and matches the rule already applied to agents with no readable transcript.
-ipcMain.handle('quotas:getSession', (_event, { agentId, cwd, sessionId }) => {
+function quotasGetSession(_event, { agentId, cwd, sessionId }) {
   const dir = sessionDirFor(agentId, cwd);
   if (!dir || !cwd || !sessionId) return null;
   try {
@@ -340,16 +347,18 @@ ipcMain.handle('quotas:getSession', (_event, { agentId, cwd, sessionId }) => {
     return readSessionUsage(agentId, file);
   } catch { /* unreadable/half-written transcript — just show nothing */ }
   return null;
-});
+}
+ipcMain.handle('quotas:getSession', quotasGetSession);
 
 // ---- Agent list (config-driven, mirrors v1's agents.json pattern) ----
-ipcMain.handle('agents:list', () => {
+function agentsList() {
   try {
     return JSON.parse(fs.readFileSync(path.join(__dirname, 'agents.json'), 'utf8'));
   } catch {
     return [];
   }
-});
+}
+ipcMain.handle('agents:list', agentsList);
 
 // ---- Projects (File menu) ----
 // "Add Project": pick a folder + add it to the saved list + automatically make it the
@@ -367,7 +376,7 @@ async function browseDialog() {
   return result.filePaths[0];
 }
 
-ipcMain.handle('projects:add', async () => {
+async function projectsAdd() {
   const dir = await browseDialog();
   if (!dir) return null;
   const cfg = loadConfig();
@@ -377,76 +386,88 @@ ipcMain.handle('projects:add', async () => {
   cfg.openProjectPath = dir;
   saveConfig(cfg);
   return { name, path: dir };
-});
+}
+ipcMain.handle('projects:add', projectsAdd);
 
-ipcMain.handle('projects:browse', () => browseDialog());
+function projectsBrowse() { return browseDialog(); }
+ipcMain.handle('projects:browse', projectsBrowse);
 
-ipcMain.handle('projects:list', () => {
+function projectsList() {
   const cfg = loadConfig();
   return cfg.projects || [];
-});
+}
+ipcMain.handle('projects:list', projectsList);
 
-ipcMain.handle('projects:remove', (_event, dir) => {
+function projectsRemove(_event, dir) {
   const cfg = loadConfig();
   cfg.projects = (cfg.projects || []).filter((p) => p.path !== dir);
   if (cfg.openProjectPath === dir) cfg.openProjectPath = null;
   saveConfig(cfg);
   return cfg.projects;
-});
+}
+ipcMain.handle('projects:remove', projectsRemove);
 
 // cwd fallback for panels with no assigned project (a folder the user picks instead of
 // the default USERPROFILE). Asked once on first launch, changeable from the File menu.
-ipcMain.handle('settings:getDefaultBaseDir', () => {
+function settingsGetDefaultBaseDir() {
   const cfg = loadConfig();
   return cfg.defaultBaseDir || null;
-});
+}
+ipcMain.handle('settings:getDefaultBaseDir', settingsGetDefaultBaseDir);
 
-ipcMain.handle('settings:setDefaultBaseDir', async () => {
+async function settingsSetDefaultBaseDir() {
   const dir = await browseDialog();
   if (!dir) return null;
   const cfg = loadConfig();
   cfg.defaultBaseDir = dir;
   saveConfig(cfg);
   return dir;
-});
+}
+ipcMain.handle('settings:setDefaultBaseDir', settingsSetDefaultBaseDir);
 
 // Per-agent glow color (View menu) — e.g. "claude is always orange, qwen is always
 // purple"; only {agentId: colorKey} is persisted, the hex values live in the
 // renderer's palette dictionary.
-ipcMain.handle('settings:getAgentColors', () => {
+function settingsGetAgentColors() {
   const cfg = loadConfig();
   return cfg.agentColors || {};
-});
+}
+ipcMain.handle('settings:getAgentColors', settingsGetAgentColors);
 
-ipcMain.handle('settings:setAgentColor', (_event, { agentId, colorKey }) => {
+function settingsSetAgentColor(_event, { agentId, colorKey }) {
   const cfg = loadConfig();
   cfg.agentColors = cfg.agentColors || {};
   cfg.agentColors[agentId] = colorKey;
   saveConfig(cfg);
-});
+}
+ipcMain.handle('settings:setAgentColor', settingsSetAgentColor);
 
-ipcMain.handle('projects:getOpen', () => {
+function projectsGetOpen() {
   const cfg = loadConfig();
   return cfg.openProjectPath || null;
-});
+}
+ipcMain.handle('projects:getOpen', projectsGetOpen);
 
-ipcMain.handle('projects:setOpen', (_event, dir) => {
+function projectsSetOpen(_event, dir) {
   const cfg = loadConfig();
   cfg.openProjectPath = dir || null;
   saveConfig(cfg);
-});
+}
+ipcMain.handle('projects:setOpen', projectsSetOpen);
 
 // ---- Workspace persistence (K15) ----
 // What panels were open, which view mode was active, and where each panel sat on the
 // canvas. Stored in the same config file as everything else; the renderer saves a
 // debounced snapshot on every structural change and a final one on window close.
-ipcMain.handle('workspace:get', () => loadConfig().workspace || null);
+function workspaceGet() { return loadConfig().workspace || null; }
+ipcMain.handle('workspace:get', workspaceGet);
 
-ipcMain.on('workspace:save', (_event, ws) => {
+function workspaceSave(_event, ws) {
   const cfg = loadConfig();
   cfg.workspace = ws;
   saveConfig(cfg);
-});
+}
+ipcMain.on('workspace:save', workspaceSave);
 
 // ---- Scrollback persistence (K16) ----
 // Panels get their terminal history back on restart so a restored panel doesn't come
@@ -471,32 +492,35 @@ function scrollbackFile(key) {
 
 // `on`, not `handle`: this is also called during the close flush, where waiting on an
 // async round-trip would race the window teardown.
-ipcMain.on('scrollback:save', (_event, { key, text }) => {
+function scrollbackSave(_event, { key, text }) {
   const file = scrollbackFile(key);
   if (!file) return;
   try {
     if (text) fs.writeFileSync(file, text, 'utf8');
     else fs.rmSync(file, { force: true });
   } catch { /* disk full / permissions — history is a nicety, never fatal */ }
-});
+}
+ipcMain.on('scrollback:save', scrollbackSave);
 
-ipcMain.handle('scrollback:load', (_event, key) => {
+function scrollbackLoad(_event, key) {
   const file = scrollbackFile(key);
   if (!file) return null;
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
-});
+}
+ipcMain.handle('scrollback:load', scrollbackLoad);
 
-ipcMain.on('scrollback:clear', (_event, key) => {
+function scrollbackClear(_event, key) {
   const file = scrollbackFile(key);
   if (!file) return;
   try { fs.rmSync(file, { force: true }); } catch { /* noop */ }
-});
+}
+ipcMain.on('scrollback:clear', scrollbackClear);
 
 // ---- Attention notifications (K17) ----
 // Fired when a panel's agent looks like it's waiting on the user. Suppressed while the
 // window is focused — the glowing badge in the panel head is enough when you're
 // already looking at it; the OS toast is for when multicli is in the background.
-ipcMain.on('notify:attention', (_event, { title, body }) => {
+function notifyAttention(_event, { title, body }) {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFocused()) return;
   try {
     mainWindow.flashFrame(true);
@@ -510,10 +534,66 @@ ipcMain.on('notify:attention', (_event, { title, body }) => {
       n.show();
     }
   } catch { /* notifications are best-effort */ }
-});
+}
+ipcMain.on('notify:attention', notifyAttention);
+
+// ---- Live panel registry (remote access, 30 Aug 2026) ----
+// main.js otherwise has no idea which agent/label/folder a pty id belongs to — that
+// metadata lives only in the renderer's in-memory `panels` Map (K15's disk snapshot is
+// too stale/wrong-shaped to double as this: it's what to *recreate* on a cold start,
+// not what's *currently alive*). Any renderer — the local window or a remote browser
+// tab — announces a panel right after spawning it and un-announces it on close, so a
+// second viewer connecting later (or after) can ask "what's actually running right
+// now" and attach to it instead of spawning a duplicate. See remote.js/remote-bridge.js.
+/** @type {Map<string, object>} */
+const panelMeta = new Map();
+
+function panelAnnounce(_event, meta) {
+  if (!meta || !meta.id) return;
+  panelMeta.set(meta.id, meta);
+  broadcast('panel:new', meta, _event?.sender);
+}
+ipcMain.on('panel:announce', panelAnnounce);
+
+function panelClosed(_event, id) {
+  panelMeta.delete(id);
+  broadcast('panel:closed', id, _event?.sender);
+}
+ipcMain.on('panel:closed', panelClosed);
+
+function panelsListLive() {
+  return [...panelMeta.values()];
+}
+ipcMain.handle('panels:listLive', panelsListLive);
+
+// Fans a main->renderer event out to the local window AND every connected remote
+// socket, so every attached viewer (desktop + N browsers) converges on the same live
+// panel set and the same terminal output. `exceptSender` skips the webContents that
+// the event originated from (a remote tab announcing its own new panel doesn't need
+// to hear its own announcement echoed back) — remote.js does the equivalent for its
+// sockets.
+function broadcast(channel, payload, exceptSender) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents !== exceptSender) {
+      mainWindow.webContents.send(channel, payload);
+    }
+  } catch { /* window gone */ }
+  remote.broadcast(channel, payload, exceptSender);
+}
 
 // ---- PTY lifecycle ----
-ipcMain.handle('pty:spawn', (_event, { id, cwd, cols, rows }) => {
+// NOTE: spawning is keyed purely by `id` and unconditionally kills+replaces whatever
+// already holds that id — safe as long as every caller (local renderer, any number of
+// remote tabs) mints ids that can't collide. See `mintPanelId()` in renderer.js: ids
+// used to be a simple per-page-load counter (`claude-1`, `claude-2`, …), which meant a
+// remote tab's very first panel and the desktop app's very first panel of the same
+// agent generated the *identical* id — a remote page load would silently kill and
+// respawn the live desktop session sharing that id. Fixed 30 Aug 2026 (K22) by making
+// ids collision-resistant across independent JS contexts instead of guarding here;
+// this handler's "kill whatever's already there" behavior is kept as-is because a
+// genuine re-spawn of the *same* id (project reassignment, `pty:spawn` called twice
+// for one panel) is supposed to replace it.
+function ptySpawn(_event, { id, cwd, cols, rows }) {
   if (ptyProcesses.has(id)) {
     try { ptyProcesses.get(id).kill(); } catch { /* noop */ }
     ptyProcesses.delete(id);
@@ -536,34 +616,109 @@ ipcMain.handle('pty:spawn', (_event, { id, cwd, cols, rows }) => {
     env: process.env,
   });
 
-  // try/catch is defense in depth on top of the `mainWindow?.` guard (see the
-  // 'closed' handler above) — belt and suspenders against any other teardown timing
-  // where webContents could already be gone.
-  proc.onData((data) => {
-    try { mainWindow?.webContents.send('pty:data', { id, data }); } catch { /* window is gone */ }
-  });
+  // Broadcast (not a direct mainWindow.send) so any attached remote viewer's terminal
+  // mirrors this panel's output too, not just the local window's.
+  proc.onData((data) => broadcast('pty:data', { id, data }));
   proc.onExit(({ exitCode }) => {
-    try { mainWindow?.webContents.send('pty:exit', { id, exitCode }); } catch { /* window is gone */ }
+    broadcast('pty:exit', { id, exitCode });
     ptyProcesses.delete(id);
+    panelMeta.delete(id);
   });
 
   ptyProcesses.set(id, proc);
   return resolvedCwd;
-});
+}
+ipcMain.handle('pty:spawn', ptySpawn);
 
-ipcMain.on('pty:write', (_event, { id, data }) => {
+function ptyWrite(_event, { id, data }) {
   ptyProcesses.get(id)?.write(data);
-});
+}
+ipcMain.on('pty:write', ptyWrite);
 
-ipcMain.on('pty:resize', (_event, { id, cols, rows }) => {
+function ptyResize(_event, { id, cols, rows }) {
   const proc = ptyProcesses.get(id);
   if (!proc) return;
   try { proc.resize(cols, rows); } catch { /* panel mid-teardown */ }
-});
+}
+ipcMain.on('pty:resize', ptyResize);
 
-ipcMain.on('pty:kill', (_event, { id }) => {
+function ptyKill(_event, { id }) {
   const proc = ptyProcesses.get(id);
   if (!proc) return;
   try { proc.kill(); } catch { /* noop */ }
   ptyProcesses.delete(id);
+  panelMeta.delete(id);
+}
+ipcMain.on('pty:kill', ptyKill);
+
+// ---- Remote access (30 Aug 2026, K22) ----
+// Attach/control the *same* live panels above from another device on the Tailscale
+// tailnet (or plain LAN) — see PROJECT.md §3.7 for the full design and why plain HTTP
+// (no TLS) is fine here: nothing is embedded in another HTTPS page (that plan was
+// dropped), so there's no mixed-content requirement, just the token check below.
+//
+// Every remote-reachable method is exposed here by name so remote.js's WS dispatcher
+// can call the exact same code the local IPC handlers above use — one implementation,
+// two transports. Deliberately NOT exposed remotely: settings:setDefaultBaseDir /
+// projects:add / projects:browse still work (they're harmless, if surprising — a
+// folder dialog pops up on the host's screen) but there is nothing here that reaches
+// outside `app.getPath('userData')` or an explicitly chosen project folder.
+const remoteHandlers = {
+  'quotas:get': quotasGet,
+  'quotas:getSession': quotasGetSession,
+  'agents:list': agentsList,
+  'projects:add': projectsAdd,
+  'projects:browse': projectsBrowse,
+  'projects:list': projectsList,
+  'projects:remove': projectsRemove,
+  'projects:getOpen': projectsGetOpen,
+  'projects:setOpen': projectsSetOpen,
+  'settings:getDefaultBaseDir': settingsGetDefaultBaseDir,
+  'settings:setDefaultBaseDir': settingsSetDefaultBaseDir,
+  'settings:getAgentColors': settingsGetAgentColors,
+  'settings:setAgentColor': settingsSetAgentColor,
+  'session:claim': sessionClaim,
+  'workspace:get': workspaceGet,
+  'workspace:save': workspaceSave,
+  'scrollback:save': scrollbackSave,
+  'scrollback:load': scrollbackLoad,
+  'scrollback:clear': scrollbackClear,
+  'notify:attention': notifyAttention,
+  'panels:listLive': panelsListLive,
+  'panel:announce': panelAnnounce,
+  'panel:closed': panelClosed,
+  'pty:spawn': ptySpawn,
+  'pty:write': ptyWrite,
+  'pty:resize': ptyResize,
+  'pty:kill': ptyKill,
+};
+
+ipcMain.handle('remote:start', async () => {
+  const cfg = loadConfig();
+  if (!cfg.remoteToken) {
+    cfg.remoteToken = crypto.randomBytes(18).toString('base64url');
+    saveConfig(cfg);
+  }
+  const { port, urls } = await remote.start({ handlers: remoteHandlers, token: cfg.remoteToken });
+  const primary = urls[0] ? `${urls[0]}?token=${cfg.remoteToken}` : null;
+  if (primary) {
+    try { clipboard.writeText(primary); } catch { /* best-effort */ }
+    try { shell.openExternal(primary); } catch { /* best-effort */ }
+  }
+  // A native dialog, not a renderer-side alert() — this app has no other blocking
+  // browser dialogs anywhere, and shell.openExternal already popped a new window, so
+  // this is purely "here's the link, in case the auto-opened tab isn't the device you
+  // meant to use" (e.g. starting it to hand the LAN URL to a phone).
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Remote Access',
+    message: primary
+      ? `Started and opened in your browser:\n${primary}\n\n(Copied to clipboard.)`
+      : 'Started, but no LAN/Tailscale address was found to open — check your network connection.',
+    buttons: ['OK'],
+  }).catch(() => { /* dialog is best-effort */ });
+  return { port, urls, token: cfg.remoteToken };
 });
+
+ipcMain.handle('remote:stop', async () => remote.stop());
+ipcMain.handle('remote:status', () => remote.status());
